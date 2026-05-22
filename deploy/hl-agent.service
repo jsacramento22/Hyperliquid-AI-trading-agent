@@ -1,0 +1,43 @@
+[Unit]
+Description=hl-agent — Hyperliquid AI trading bot (FastAPI + scheduler)
+Documentation=https://github.com/yourusername/hl-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hlagent
+Group=hlagent
+WorkingDirectory=/home/hlagent/hyperliquid
+
+# Load secrets from the .env file (HL_AGENT_PRIVATE_KEY etc).
+# pydantic-settings will read this from working dir automatically, but
+# making it explicit here means systemd shows a clear error if it's missing.
+EnvironmentFile=/home/hlagent/hyperliquid/.env
+
+# Use the venv's python directly — avoids needing to activate
+ExecStart=/home/hlagent/hyperliquid/.venv/bin/python -m hl_agent.server
+
+# Restart on any non-zero exit; wait 10s between attempts so we don't
+# hammer the Anthropic API if the credentials are wrong.
+Restart=always
+RestartSec=10
+
+# Resource limits — protect the small droplet from runaway memory
+MemoryMax=600M
+TasksMax=128
+
+# Logging — go to journald, view with `journalctl -u hl-agent -f`
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hl-agent
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/hlagent/hyperliquid/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

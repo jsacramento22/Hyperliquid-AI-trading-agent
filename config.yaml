@@ -1,0 +1,35 @@
+network: mainnet                    # testnet | mainnet
+model: claude-sonnet-4-6
+assets: [BTC, ETH]
+cadence_minutes: 15
+position_leverage: 5                # per-position leverage on Hyperliquid (1-50). Lowered from 40 for mainnet — much further liquidation distance.
+position_margin_cross: true         # cross margin (true) vs isolated (false). Live-editable in the UI.
+
+risk:
+  max_leverage: 2.0
+  max_position_pct_per_asset: 0.10  # ~$96/asset at $956 equity (tightened from 0.25 for mainnet)
+  max_total_notional_pct: 0.20      # ~$191 total at $956 equity (tightened from 0.50 for mainnet)
+  daily_drawdown_kill_switch_pct: -0.05  # kill at -5% (~-$48 at $956 equity; tightened from -0.10)
+  min_order_usd: 10
+
+market_data:
+  candles_15m: 12                     # ~3h of recent action — for late-entry detection
+  candles_1h: 24
+  candles_4h: 14
+
+storage:
+  path: data/hl_agent.db
+
+take_profit:                          # auto-close positions at +X% gain (no LLM call)
+  enabled: true
+  pct: 0.015                          # 1.5% gain on entry notional
+  check_interval_seconds: 60          # poll cadence between agent cycles
+  require_consecutive_checks: 2       # # of consecutive ticks above threshold before firing (filters mark-price spikes)
+  close_slippage: 0.005               # max slippage on the close order (0.5%; default SDK is 5%)
+
+stop_loss:                            # auto-close positions at -X% loss (mirror of take_profit)
+  enabled: true
+  pct: 0.015                          # close when uPnL <= -1.5% of entry notional
+  check_interval_seconds: 60          # shares the monitor tick with take_profit
+  require_consecutive_checks: 2
+  close_slippage: 0.005

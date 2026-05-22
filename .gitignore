@@ -1,0 +1,46 @@
+# === Python ===
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# === Secrets (NEVER commit) ===
+.env
+.env.local
+.env.*.local
+web/.env
+web/.env.local
+web/.env.*.local
+
+# === Persistent data ===
+*.db
+*.sqlite
+*.sqlite3
+*.db.bak
+data/
+logs/
+
+# === Node / Next.js ===
+node_modules/
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# === OS / Editor ===
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
