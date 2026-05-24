@@ -187,7 +187,7 @@ text and no tool. If you have nothing to do, that decision must still be
 expressed as `hold(reasoning=...)`. This keeps the decision log uniform and
 your reasoning attached to a structured action.
 
-[cache-key: v8 / 2026-05-22 — bump this string to force a fresh cache write]"""
+[cache-key: v9 / 2026-05-24 — bump this string to force a fresh cache write]"""
 
 
 @dataclass
