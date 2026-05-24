@@ -227,3 +227,133 @@ def test_opposite_fill_closes_position_implicitly():
     [t] = compute_trades(fills)
     assert t.side == "long"
     assert abs(t.realized_pnl_usd - 0.50) < 1e-6  # 0.05 * (2410 - 2400)
+
+
+# -- trades_from_user_fills (exchange-sourced reconstruction) --------------
+
+from hl_agent.trades import trades_from_user_fills
+
+
+def _ufill(
+    coin: str,
+    dir_: str,
+    sz: float,
+    px: float,
+    ts_ms: int,
+    closed_pnl: float = 0.0,
+) -> dict:
+    """Mirror Hyperliquid's user_fills row shape."""
+    return {
+        "coin": coin,
+        "dir": dir_,
+        "sz": str(sz),
+        "px": str(px),
+        "closedPnl": str(closed_pnl),
+        "time": ts_ms,
+        "side": "B" if "Long" in dir_ and dir_.startswith("Open") else "A",
+        "oid": ts_ms,
+        "hash": "0x0",
+        "crossed": False,
+        "startPosition": "0",
+    }
+
+
+def test_ufills_simple_long():
+    fills = [
+        _ufill("ETH", "Open Long", 0.05, 2_400, 1_700_000_000_000),
+        _ufill("ETH", "Close Long", 0.05, 2_450, 1_700_001_000_000, closed_pnl=2.5),
+    ]
+    [t] = trades_from_user_fills(fills)
+    assert t.asset == "ETH"
+    assert t.side == "long"
+    assert t.size == 0.05
+    assert t.avg_entry_px == 2_400
+    assert t.exit_px == 2_450
+    assert t.realized_pnl_usd == 2.5  # from exchange's closedPnl, not recomputed
+    assert t.fill_count == 2
+    assert t.duration_seconds == 1_000
+
+
+def test_ufills_orphan_close_creates_trade():
+    """The bug today's trade hit: limit order filled on exchange but we have
+    no Open record for it (because our local fills table stops at "resting").
+    With user_fills as source of truth, the Close fill alone produces a trade
+    rather than being silently dropped."""
+    fills = [
+        # Only a Close — Open happened before query window / was an unobserved fill.
+        _ufill("ETH", "Close Long", 0.0451, 2_093.4, 1_700_100_000_000, closed_pnl=1.20),
+    ]
+    [t] = trades_from_user_fills(fills)
+    assert t.asset == "ETH"
+    assert t.side == "long"
+    assert t.size == 0.0451
+    assert t.realized_pnl_usd == 1.20
+    # Entry back-derived from closedPnl: 2093.4 - 1.20/0.0451 ≈ 2066.79
+    assert abs(t.avg_entry_px - (2_093.4 - 1.20 / 0.0451)) < 1e-6
+    assert t.exit_px == 2_093.4
+
+
+def test_ufills_partial_closes_aggregate():
+    fills = [
+        _ufill("BTC", "Open Short", 0.002, 70_000, 1_700_000_000_000),
+        _ufill("BTC", "Close Short", 0.0012, 69_500, 1_700_000_500_000, closed_pnl=0.60),
+        _ufill("BTC", "Close Short", 0.0008, 69_400, 1_700_000_700_000, closed_pnl=0.48),
+    ]
+    [t] = trades_from_user_fills(fills)
+    assert t.side == "short"
+    assert abs(t.size - 0.002) < 1e-9
+    assert t.fill_count == 3
+    assert abs(t.realized_pnl_usd - 1.08) < 1e-9  # exchange PnL summed
+    # Avg exit = (0.0012*69500 + 0.0008*69400) / 0.002 = 69460
+    assert abs(t.exit_px - 69_460.0) < 1e-6
+
+
+def test_ufills_averaging_in_then_close():
+    fills = [
+        _ufill("ETH", "Open Long", 0.03, 2_400, 1_700_000_000_000),
+        _ufill("ETH", "Open Long", 0.02, 2_440, 1_700_000_500_000),  # add to position
+        _ufill("ETH", "Close Long", 0.05, 2_500, 1_700_000_900_000, closed_pnl=4.20),
+    ]
+    [t] = trades_from_user_fills(fills)
+    assert t.side == "long"
+    # Avg entry = (0.03*2400 + 0.02*2440) / 0.05 = 2416
+    assert abs(t.avg_entry_px - 2_416.0) < 1e-6
+    assert abs(t.realized_pnl_usd - 4.20) < 1e-9
+
+
+def test_ufills_two_sequential_round_trips_same_coin():
+    fills = [
+        _ufill("ETH", "Open Long", 0.04, 2_400, 1_700_000_000_000),
+        _ufill("ETH", "Close Long", 0.04, 2_420, 1_700_000_300_000, closed_pnl=0.80),
+        _ufill("ETH", "Open Short", 0.05, 2_430, 1_700_000_600_000),
+        _ufill("ETH", "Close Short", 0.05, 2_410, 1_700_000_900_000, closed_pnl=1.00),
+    ]
+    trades = trades_from_user_fills(fills)
+    assert len(trades) == 2
+    # Sorted newest-first
+    assert trades[0].side == "short"
+    assert trades[1].side == "long"
+    assert trades[0].realized_pnl_usd == 1.00
+    assert trades[1].realized_pnl_usd == 0.80
+
+
+def test_ufills_still_open_position_excluded():
+    """A position with no close yet shouldn't produce a Trade."""
+    fills = [
+        _ufill("ETH", "Open Long", 0.05, 2_400, 1_700_000_000_000),
+    ]
+    assert trades_from_user_fills(fills) == []
+
+
+def test_ufills_unrecognized_row_skipped():
+    fills = [
+        {"this": "is not a fill"},
+        _ufill("ETH", "Open Long", 0.05, 2_400, 1_700_000_000_000),
+        _ufill("ETH", "Close Long", 0.05, 2_450, 1_700_001_000_000, closed_pnl=2.5),
+    ]
+    trades = trades_from_user_fills(fills)
+    assert len(trades) == 1
+
+
+def test_ufills_empty_input():
+    assert trades_from_user_fills([]) == []

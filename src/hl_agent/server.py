@@ -27,7 +27,7 @@ from .main import (
 )
 from .settings import RiskConfig, Settings, load_settings
 from .storage import Storage
-from .trades import compute_trades
+from .trades import compute_trades, trades_from_user_fills
 
 log = logging.getLogger("hl_agent")
 
@@ -316,13 +316,32 @@ def create_app(
         }
 
     @app.get("/api/trades")
-    def trades(limit: int = 100):
+    def trades(limit: int = 100, days: int = 30):
+        """Source of truth = Hyperliquid's user_fills API (not our local fills
+        table). The local table records what the bot TRIED to place; it
+        misses fills that happened later — e.g. limit orders that went
+        `resting` at placement and matched on the book minutes/hours later.
+        Querying the exchange directly fixes that.
+
+        `days` bounds the window; default 30d covers anything sensible for a
+        bot running at 15-min cadence.
+        """
         if limit <= 0 or limit > 1000:
             raise HTTPException(400, "limit must be in (0, 1000]")
-        # Pull more raw fills than `limit` because each trade is multiple fills.
-        all_fills = storage.recent_fills(limit * 4)
-        completed = compute_trades(all_fills)[:limit]
-        from dataclasses import asdict
+        if days <= 0 or days > 365:
+            raise HTTPException(400, "days must be in (0, 365]")
+
+        try:
+            client = build_client(settings)
+            since_ms = int(
+                (datetime.now(tz=timezone.utc).timestamp() - days * 86400) * 1000
+            )
+            raw = client.info.user_fills_by_time(client.account_address, since_ms)
+        except Exception as e:
+            log.exception("user_fills_by_time failed")
+            raise HTTPException(502, f"exchange fills query failed: {e}")
+
+        completed = trades_from_user_fills(raw or [])[:limit]
 
         rows = [asdict(t) for t in completed]
         total_pnl = sum(t.realized_pnl_usd for t in completed)
