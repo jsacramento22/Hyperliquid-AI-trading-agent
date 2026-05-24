@@ -185,9 +185,7 @@ End the turn by **calling the `hold` tool** if you have nothing to do.
 Every cycle must end with at least one tool call — never just respond with
 text and no tool. If you have nothing to do, that decision must still be
 expressed as `hold(reasoning=...)`. This keeps the decision log uniform and
-your reasoning attached to a structured action.
-
-[cache-key: v9 / 2026-05-24 — bump this string to force a fresh cache write]"""
+your reasoning attached to a structured action."""
 
 
 @dataclass
