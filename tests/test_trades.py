@@ -357,3 +357,23 @@ def test_ufills_unrecognized_row_skipped():
 
 def test_ufills_empty_input():
     assert trades_from_user_fills([]) == []
+
+
+def test_ufills_open_fees_included_in_realized_pnl():
+    """Hyperliquid reports the entry fee as a small negative closedPnl on
+    Open rows (no position is closed, but the fee shows up here for account
+    equity accounting). We must sum closedPnl across both opens and closes
+    to capture the true net-of-fees PnL — otherwise the trade looks
+    systematically better than it actually is by a few cents."""
+    # Mirrors today's actual ETH trade: two opens (limit fills, tiny open
+    # fees) + one close. Hyperliquid showed -0.01 + -0.00 + -0.70 = -0.71.
+    fills = [
+        _ufill("ETH", "Open Long", 0.0338, 2_108.0, 1_700_000_000_000, closed_pnl=-0.01),
+        _ufill("ETH", "Open Long", 0.0113, 2_108.0, 1_700_000_001_000, closed_pnl=-0.00),
+        _ufill("ETH", "Close Long", 0.0451, 2_093.4, 1_700_100_000_000, closed_pnl=-0.70),
+    ]
+    [t] = trades_from_user_fills(fills)
+    assert t.side == "long"
+    assert abs(t.size - 0.0451) < 1e-9
+    assert abs(t.realized_pnl_usd - (-0.71)) < 1e-9  # net of all fees
+    assert t.fill_count == 3

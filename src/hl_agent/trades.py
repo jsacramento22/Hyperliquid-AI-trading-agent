@@ -358,6 +358,12 @@ def trades_from_user_fills(raw_fills: list[dict]) -> list[Trade]:
                     first_open_ts = f.time_ms
                 open_size += f.sz
                 open_cost += f.sz * f.px
+                # Hyperliquid reports opens' closedPnl as roughly -fee (no
+                # position closes, but the fee charge shows up here for
+                # account-equity accounting). Sum it so total realized_pnl
+                # reflects entry fees too — otherwise we systematically
+                # under-count losses by a few cents per trade.
+                realized_pnl += f.closed_pnl
                 fill_count += 1
                 continue
 
