@@ -8,6 +8,7 @@ import type {
   LeverageApplyResponse,
   Risk,
   RuntimeState,
+  ShadowResponse,
   TradesResponse,
 } from "./types";
 
@@ -67,6 +68,8 @@ export const api = {
   fills: (limit = 50) => get<FillsResponse>(`/api/fills?limit=${limit}`),
   trades: (limit = 100) => get<TradesResponse>(`/api/trades?limit=${limit}`),
   cost: (hours = 24) => get<CostResponse>(`/api/cost?hours=${hours}`),
+  shadow: (hours = 24, limit = 50) =>
+    get<ShadowResponse>(`/api/shadow?hours=${hours}&limit=${limit}`),
   runtime: () => get<RuntimeState>("/api/runtime"),
   pause: (paused: boolean) =>
     post<{ paused: boolean }>("/api/pause", { paused }),

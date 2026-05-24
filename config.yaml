@@ -33,3 +33,7 @@ stop_loss:                            # auto-close positions at -X% loss (mirror
   check_interval_seconds: 60          # shares the monitor tick with take_profit
   require_consecutive_checks: 2
   close_slippage: 0.005
+
+shadow:                               # A/B shadow run a second model on each cycle, log only — never trades
+  enabled: true
+  model: claude-haiku-4-5-20251001

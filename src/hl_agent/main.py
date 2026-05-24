@@ -14,9 +14,11 @@ from . import account as account_mod
 from . import market_data
 from . import monitor
 from . import runtime
+from .account import AccountState
 from .agent import run_cycle
 from .executor import Executor
-from .hl_client import build_client, initialize_position_leverage
+from .hl_client import HLClient, build_client, initialize_position_leverage
+from .market_data import MarketSnapshot
 from .settings import Settings, load_settings
 from .storage import Storage
 
@@ -120,6 +122,113 @@ def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
     for a in result.actions:
         verdict = "OK" if a.accepted else "REJECT"
         log.info("  %s %s args=%s reason=%s", verdict, a.tool, a.args, a.reason)
+
+    # Shadow A/B run: identical snapshot + account, different model. Logged
+    # to shadow_* tables but never executes (executor is dry_run). Wrapped so
+    # a shadow failure can NEVER affect the primary cycle.
+    if settings.config.shadow.enabled:
+        try:
+            _run_shadow_cycle(
+                settings=settings,
+                cycle_id=cycle_id,
+                client=client,
+                snapshot=snapshot,
+                account=account,
+                starting_equity_usd=starting_equity,
+                storage=storage,
+                risk_config=risk_config,
+            )
+        except Exception as e:
+            log.exception("shadow cycle raised — continuing (primary unaffected)")
+            try:
+                storage.log_cycle_error(
+                    cycle_id=cycle_id,
+                    component="shadow_cycle",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
+            except Exception:
+                log.exception("also failed to record shadow cycle error")
+
+
+def _run_shadow_cycle(
+    *,
+    settings: Settings,
+    cycle_id: str,
+    client: HLClient,
+    snapshot: MarketSnapshot,
+    account: AccountState,
+    starting_equity_usd: float,
+    storage: Storage,
+    risk_config,
+) -> None:
+    """Run a second LLM (typically a cheaper model) on the SAME snapshot the
+    primary just saw. The executor is dry_run=True, so the risk gate still
+    runs (which is what makes the comparison meaningful — "what would Haiku
+    have done that the gate would actually accept?") but nothing reaches the
+    exchange. Logs to shadow_decisions + shadow_token_usage, keyed by the
+    same cycle_id as the primary so we can JOIN them later.
+    """
+    shadow_model = settings.config.shadow.model
+    log.info("cycle %s shadow start — model=%s", cycle_id, shadow_model)
+
+    shadow_executor = Executor(
+        client=client,
+        storage=storage,
+        risk_config=risk_config,
+        allowed_assets=settings.config.assets,
+        cycle_id=cycle_id,
+        dry_run=True,
+    )
+
+    anthropic = Anthropic(api_key=settings.secrets.anthropic_api_key)
+    result = run_cycle(
+        anthropic=anthropic,
+        model=shadow_model,
+        network=settings.config.network,
+        allowed_assets=settings.config.assets,
+        snapshot=snapshot,
+        account=account,
+        starting_equity_usd=starting_equity_usd,
+        executor=shadow_executor,
+    )
+
+    executed = [asdict(a) for a in result.actions if a.accepted]
+    rejected = [asdict(a) for a in result.actions if not a.accepted]
+    storage.log_shadow_decision(
+        cycle_id=cycle_id,
+        model=shadow_model,
+        network=settings.config.network,
+        reasoning=result.reasoning,
+        raw_tool_calls=result.raw_tool_calls,
+        executed_actions=executed,
+        rejected_actions=rejected,
+    )
+
+    u = result.usage
+    if u:
+        cw_5m = u.get("cache_write_5m_input_tokens", 0)
+        cw_1h = u.get("cache_write_1h_input_tokens", 0)
+        cw_total = u.get("cache_creation_input_tokens", 0)
+        if cw_5m + cw_1h == 0 and cw_total > 0:
+            cw_5m = cw_total
+        storage.log_shadow_token_usage(
+            cycle_id=cycle_id,
+            model=shadow_model,
+            input_tokens=u.get("input_tokens", 0),
+            cache_read_tokens=u.get("cache_read_input_tokens", 0),
+            cache_write_5m_tokens=cw_5m,
+            cache_write_1h_tokens=cw_1h,
+            output_tokens=u.get("output_tokens", 0),
+        )
+
+    log.info(
+        "cycle %s shadow done — model=%s would_execute=%d would_reject=%d",
+        cycle_id,
+        shadow_model,
+        len(executed),
+        len(rejected),
+    )
 
 
 def compute_next_run_time(settings: Settings) -> datetime:

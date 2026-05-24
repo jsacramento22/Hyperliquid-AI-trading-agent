@@ -66,12 +66,44 @@ CREATE TABLE IF NOT EXISTS cycle_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_utc TEXT NOT NULL,
     cycle_id TEXT,
-    component TEXT NOT NULL,              -- "agent_cycle" | "tp_monitor"
+    component TEXT NOT NULL,              -- "agent_cycle" | "tp_monitor" | "shadow_cycle"
     error_type TEXT NOT NULL,
     error_message TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_cycle_errors_ts ON cycle_errors(ts_utc);
+
+-- Shadow tables: same shape as `decisions` and `token_usage`, but for the
+-- never-executed A/B model. cycle_id matches the primary so we can JOIN to
+-- compare actions side-by-side (e.g. how often Haiku agrees with Sonnet).
+CREATE TABLE IF NOT EXISTS shadow_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_utc TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    network TEXT NOT NULL,
+    reasoning TEXT,
+    raw_tool_calls TEXT NOT NULL,         -- JSON array
+    executed_actions TEXT NOT NULL,        -- JSON array (would-have-executed)
+    rejected_actions TEXT NOT NULL         -- JSON array
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_decisions_cycle ON shadow_decisions(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_shadow_decisions_ts ON shadow_decisions(ts_utc);
+
+CREATE TABLE IF NOT EXISTS shadow_token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_utc TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_token_usage_ts ON shadow_token_usage(ts_utc);
 """
 
 
@@ -283,6 +315,98 @@ class Storage:
                 "SELECT ts_utc, cycle_id, equity_usd, free_margin_usd, "
                 "total_notional_usd, margin_used_usd "
                 "FROM equity_snapshots WHERE ts_utc >= ? ORDER BY id ASC",
+                (cutoff_iso,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Shadow A/B mode ---------------------------------------------------
+    # Mirror methods for the never-executed comparison model. Same shape as
+    # log_decision / log_token_usage but write to the shadow_* tables. The
+    # cycle_id matches the primary cycle so callers can JOIN to align them.
+
+    def log_shadow_decision(
+        self,
+        *,
+        cycle_id: str,
+        model: str,
+        network: str,
+        reasoning: str,
+        raw_tool_calls: list[dict],
+        executed_actions: list[dict],
+        rejected_actions: list[dict],
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO shadow_decisions "
+                "(ts_utc, cycle_id, model, network, reasoning, raw_tool_calls, executed_actions, rejected_actions) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    _utc_now(),
+                    cycle_id,
+                    model,
+                    network,
+                    reasoning,
+                    _json(raw_tool_calls),
+                    _json(executed_actions),
+                    _json(rejected_actions),
+                ),
+            )
+
+    def log_shadow_token_usage(
+        self,
+        *,
+        cycle_id: str,
+        model: str,
+        input_tokens: int,
+        cache_read_tokens: int,
+        cache_write_5m_tokens: int,
+        cache_write_1h_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO shadow_token_usage "
+                "(ts_utc, cycle_id, model, input_tokens, cache_read_tokens, "
+                "cache_write_5m_tokens, cache_write_1h_tokens, output_tokens) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    _utc_now(),
+                    cycle_id,
+                    model,
+                    int(input_tokens),
+                    int(cache_read_tokens),
+                    int(cache_write_5m_tokens),
+                    int(cache_write_1h_tokens),
+                    int(output_tokens),
+                ),
+            )
+
+    def shadow_decisions_since(self, hours: int) -> list[dict]:
+        cutoff = datetime.now(tz=timezone.utc).timestamp() - hours * 3600
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM shadow_decisions WHERE ts_utc >= ? ORDER BY id DESC",
+                (cutoff_iso,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_shadow_decisions(self, limit: int = 20) -> list[dict]:
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM shadow_decisions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def shadow_token_usage_since(self, hours: int) -> list[dict]:
+        cutoff = datetime.now(tz=timezone.utc).timestamp() - hours * 3600
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM shadow_token_usage WHERE ts_utc >= ? ORDER BY id ASC",
                 (cutoff_iso,),
             ).fetchall()
         return [dict(r) for r in rows]

@@ -205,3 +205,48 @@ export type LeverageApplyResponse = {
   is_cross: boolean;
   per_asset: Record<string, string>;
 };
+
+// --- Shadow A/B ----------------------------------------------------------
+// Mirror of GET /api/shadow. One side runs Sonnet on mainnet (executes), the
+// other runs the configured shadow model on the same snapshot (logs only).
+// Pairs are joined by cycle_id so the UI can show side-by-side.
+
+export type ShadowBucket =
+  | "hold"
+  | "long"
+  | "short"
+  | "close"
+  | "cancel"
+  | "other";
+
+export type ShadowSide = {
+  model: string;
+  bucket: ShadowBucket;
+  label: string;       // human-readable summary: "hold", "market buy BTC", etc.
+  reasoning: string;
+};
+
+export type ShadowPair = {
+  cycle_id: string;
+  ts_utc: string;
+  primary: ShadowSide;
+  shadow: ShadowSide;
+  agree: boolean;      // primary.bucket === shadow.bucket
+};
+
+export type ShadowResponse = {
+  enabled: boolean;
+  model: string;
+  hours: number;
+  cycles_compared: number;
+  agreement: {
+    same_bucket_pct: number;
+    same_direction_pct: number;
+    both_hold_pct: number;
+  };
+  cost: {
+    total_usd: number;
+    projected_daily_usd: number;
+  };
+  pairs: ShadowPair[];
+};

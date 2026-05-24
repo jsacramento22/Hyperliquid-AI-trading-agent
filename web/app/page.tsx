@@ -3,6 +3,7 @@ import { CostPanel } from "@/components/CostPanel";
 import { DecisionsTable } from "@/components/DecisionsTable";
 import { EquityChart } from "@/components/EquityChart";
 import { PositionsTable } from "@/components/PositionsTable";
+import { ShadowPanel } from "@/components/ShadowPanel";
 
 export default function DashboardPage() {
   return (
@@ -14,6 +15,7 @@ export default function DashboardPage() {
         <PositionsTable />
         <DecisionsTable limit={50} />
       </div>
+      <ShadowPanel />
     </div>
   );
 }

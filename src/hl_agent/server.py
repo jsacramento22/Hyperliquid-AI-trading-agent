@@ -63,6 +63,45 @@ def _parse_decision(row: dict) -> dict:
     }
 
 
+def _classify_decision(tool_calls: list[dict]) -> dict:
+    """Reduce a cycle's tool calls to a coarse {bucket, label} pair so we can
+    compare primary vs shadow side-by-side without choking on minor arg diffs.
+
+    Buckets (mutually exclusive):
+      - "hold"                  — every call is `hold`
+      - "long"  / "short"       — at least one market/limit open
+      - "close"                 — at least one close_position
+      - "cancel"                — only cancel_all (no open/close)
+      - "other"                 — anything else / mixed
+    Label is a short human string for the UI.
+    """
+    if not tool_calls:
+        return {"bucket": "hold", "label": "no-call"}
+
+    names = [tc.get("name", "") for tc in tool_calls]
+    if all(n == "hold" for n in names):
+        return {"bucket": "hold", "label": "hold"}
+
+    # First substantive (non-hold) call drives the label.
+    for tc in tool_calls:
+        n = tc.get("name", "")
+        args = tc.get("input", {}) or {}
+        asset = (args.get("asset") or args.get("coin") or "?").upper()
+        side = args.get("side", "")
+        if n == "place_market_order":
+            bucket = "long" if side == "buy" else "short"
+            return {"bucket": bucket, "label": f"market {side} {asset}"}
+        if n == "place_limit_order":
+            bucket = "long" if side == "buy" else "short"
+            return {"bucket": bucket, "label": f"limit {side} {asset}"}
+        if n == "close_position":
+            return {"bucket": "close", "label": f"close {asset}"}
+        if n == "cancel_all":
+            return {"bucket": "cancel", "label": f"cancel {asset}"}
+
+    return {"bucket": "other", "label": ",".join(names)}
+
+
 def _parse_fill(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -300,6 +339,105 @@ def create_app(
                 "scratch": scratch,
                 "win_rate": (wins / len(completed)) if completed else 0.0,
             },
+        }
+
+    @app.get("/api/shadow")
+    def shadow(hours: int = 24, limit: int = 50):
+        """Side-by-side primary vs shadow decisions for the A/B comparison.
+
+        Returns:
+          - enabled / model: from config
+          - cycles: paired rows {cycle_id, ts_utc, primary, shadow} where
+            each side has {bucket, label, reasoning}
+          - agreement: how often shadow matched primary (% same bucket,
+            % both-hold, % same direction)
+          - cost: total shadow $ over the window + projected daily $
+        """
+        if hours <= 0 or hours > 24 * 30:
+            raise HTTPException(400, "hours must be in (0, 720]")
+        if limit <= 0 or limit > 500:
+            raise HTTPException(400, "limit must be in (0, 500]")
+
+        shadow_rows = storage.shadow_decisions_since(hours)
+        # Pull a wide window of primary decisions, then build a lookup.
+        primary_rows = storage.recent_decisions(max(limit * 4, len(shadow_rows) * 2 + 50))
+        primary_by_cycle = {r["cycle_id"]: r for r in primary_rows}
+
+        paired: list[dict] = []
+        agreements = {"same_bucket": 0, "same_direction": 0, "both_hold": 0}
+        considered = 0
+
+        for srow in shadow_rows:
+            prow = primary_by_cycle.get(srow["cycle_id"])
+            if prow is None:
+                # Primary row aged out of our lookup window — skip rather than
+                # show a half-paired row.
+                continue
+
+            primary_calls = json.loads(prow["raw_tool_calls"])
+            shadow_calls = json.loads(srow["raw_tool_calls"])
+            primary_cls = _classify_decision(primary_calls)
+            shadow_cls = _classify_decision(shadow_calls)
+
+            considered += 1
+            if primary_cls["bucket"] == shadow_cls["bucket"]:
+                agreements["same_bucket"] += 1
+                if primary_cls["bucket"] == "hold":
+                    agreements["both_hold"] += 1
+            # "Direction" = long/short bucket overlap, ignoring asset.
+            if (
+                primary_cls["bucket"] in ("long", "short")
+                and primary_cls["bucket"] == shadow_cls["bucket"]
+            ):
+                agreements["same_direction"] += 1
+            elif primary_cls["bucket"] == "hold" and shadow_cls["bucket"] == "hold":
+                agreements["same_direction"] += 1
+
+            paired.append(
+                {
+                    "cycle_id": srow["cycle_id"],
+                    "ts_utc": srow["ts_utc"],
+                    "primary": {
+                        "model": prow["model"],
+                        "bucket": primary_cls["bucket"],
+                        "label": primary_cls["label"],
+                        "reasoning": prow["reasoning"] or "",
+                    },
+                    "shadow": {
+                        "model": srow["model"],
+                        "bucket": shadow_cls["bucket"],
+                        "label": shadow_cls["label"],
+                        "reasoning": srow["reasoning"] or "",
+                    },
+                    "agree": primary_cls["bucket"] == shadow_cls["bucket"],
+                }
+            )
+
+        paired = paired[:limit]
+
+        def _pct(n: int) -> float:
+            return (n / considered) if considered else 0.0
+
+        # Shadow cost over the same window
+        token_rows = storage.shadow_token_usage_since(hours)
+        agg = cost_mod.aggregate(token_rows)
+        projected_daily = (agg.total_usd * 24 / hours) if hours > 0 else 0.0
+
+        return {
+            "enabled": settings.config.shadow.enabled,
+            "model": settings.config.shadow.model,
+            "hours": hours,
+            "cycles_compared": considered,
+            "agreement": {
+                "same_bucket_pct": _pct(agreements["same_bucket"]),
+                "same_direction_pct": _pct(agreements["same_direction"]),
+                "both_hold_pct": _pct(agreements["both_hold"]),
+            },
+            "cost": {
+                "total_usd": agg.total_usd,
+                "projected_daily_usd": projected_daily,
+            },
+            "pairs": paired,
         }
 
     @app.get("/api/runtime")
