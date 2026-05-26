@@ -46,18 +46,11 @@ class StopLossConfig(BaseModel):
     close_slippage: float = 0.005
 
 
-class ShadowConfig(BaseModel):
-    """Run a second LLM (typically a cheaper model) on the same snapshot each
-    cycle, log its would-be decisions, but DON'T execute. Lets you A/B
-    compare model quality on identical market conditions without risking
-    real money on the experimental side."""
-    enabled: bool = False
-    model: str = "claude-haiku-4-5-20251001"
-
-
 class AppConfig(BaseModel):
     network: Literal["testnet", "mainnet"] = "testnet"
-    model: str = "claude-sonnet-4-6"
+    # Model selected at process start; live-overridable via /api/model so a
+    # UI switch doesn't require a restart.
+    model: str = "claude-haiku-4-5-20251001"
     assets: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
     cadence_minutes: int = 15
     position_leverage: int = 2     # per-position leverage applied on the exchange
@@ -67,7 +60,6 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     take_profit: TakeProfitConfig = Field(default_factory=TakeProfitConfig)
     stop_loss: StopLossConfig = Field(default_factory=StopLossConfig)
-    shadow: ShadowConfig = Field(default_factory=ShadowConfig)
 
     @field_validator("assets")
     @classmethod

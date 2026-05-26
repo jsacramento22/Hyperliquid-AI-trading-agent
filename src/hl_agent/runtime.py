@@ -10,6 +10,16 @@ KEY_PAUSED = "paused"
 KEY_RISK_OVERRIDES = "risk_overrides"
 KEY_POSITION_LEVERAGE = "position_leverage"
 KEY_POSITION_MARGIN_CROSS = "position_margin_cross"
+KEY_MODEL = "model"
+
+# Allowlist for the live model switch. Must match keys in cost.PRICING so
+# cost calculations stay correct. Adding a new model here AND a pricing
+# entry in cost.py is all that's needed to make it selectable.
+SUPPORTED_MODELS = (
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-7",
+)
 
 _RISK_FIELDS = {
     "max_leverage",
@@ -77,3 +87,31 @@ def effective_position_leverage(settings: Settings, storage: Storage) -> int:
 def effective_position_margin_cross(settings: Settings, storage: Storage) -> bool:
     override = get_position_margin_cross_override(storage)
     return settings.config.position_margin_cross if override is None else override
+
+
+def get_model_override(storage: Storage) -> str | None:
+    val = storage.get_runtime_value(KEY_MODEL)
+    if not isinstance(val, str):
+        return None
+    return val if val in SUPPORTED_MODELS else None
+
+
+def set_model_override(storage: Storage, model: str) -> None:
+    if model not in SUPPORTED_MODELS:
+        raise ValueError(
+            f"unsupported model {model!r}; choose one of {list(SUPPORTED_MODELS)}"
+        )
+    storage.set_runtime_value(KEY_MODEL, model)
+
+
+def clear_model_override(storage: Storage) -> None:
+    storage.set_runtime_value(KEY_MODEL, None)
+
+
+def effective_model(settings: Settings, storage: Storage) -> str:
+    """Override > config. Used by every cycle so a UI flip takes effect on
+    the next scheduled run without a restart. Switching invalidates the
+    Anthropic prompt cache (cache keys include the model), so expect a
+    one-cycle cost bump after each change."""
+    override = get_model_override(storage)
+    return override if override else settings.config.model
