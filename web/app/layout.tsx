@@ -28,12 +28,6 @@ export default function RootLayout({
                   Dashboard
                 </Link>
                 <Link
-                  href="/trades"
-                  className="hover:text-[var(--foreground)] transition-colors"
-                >
-                  Trades
-                </Link>
-                <Link
                   href="/settings"
                   className="hover:text-[var(--foreground)] transition-colors"
                 >
