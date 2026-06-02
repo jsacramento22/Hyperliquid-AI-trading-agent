@@ -9,6 +9,27 @@ import type { Trade } from "@/lib/types";
 
 type Filter = "all" | "wins" | "losses";
 type AssetFilter = "all" | "BTC" | "ETH";
+type Period = "24h" | "7d" | "mtd" | "all";
+
+const PERIOD_LABELS: Record<Period, string> = {
+  "24h": "24h",
+  "7d": "7d",
+  mtd: "MTD",
+  all: "All time",
+};
+
+/** Cutoff (epoch ms) below which trades are excluded. null = no cutoff.
+ * `close_ts_utc` (ISO) is what we compare against. */
+function periodCutoffMs(period: Period): number | null {
+  const now = Date.now();
+  if (period === "24h") return now - 24 * 3600 * 1000;
+  if (period === "7d") return now - 7 * 86400 * 1000;
+  if (period === "mtd") {
+    const d = new Date(now);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  }
+  return null;
+}
 
 function fmtDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -29,6 +50,7 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
     queryFn: () => api.trades(limit),
   });
 
+  const [period, setPeriod] = useState<Period>("all");
   const [filter, setFilter] = useState<Filter>("all");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
 
@@ -51,9 +73,35 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
   }
 
   const all = q.data!.trades;
-  const summary = q.data!.summary;
 
-  const filtered = all.filter((t) => {
+  // Period filter is the "outer" filter: it drives the Realized PnL summary
+  // AND the trades table (so the asset / win-loss pills below are scoped to
+  // the chosen period).
+  const cutoff = periodCutoffMs(period);
+  const inPeriod = all.filter(
+    (t) => cutoff === null || new Date(t.close_ts_utc).getTime() >= cutoff,
+  );
+
+  // Summary stats computed from the period-filtered set so they actually
+  // reflect what the user asked for. The backend's summary is whole-history
+  // and isn't used here.
+  const periodSummary = {
+    count: inPeriod.length,
+    total_realized_pnl_usd: inPeriod.reduce(
+      (s, t) => s + t.realized_pnl_usd,
+      0,
+    ),
+    wins: inPeriod.filter((t) => t.realized_pnl_usd > 0).length,
+    losses: inPeriod.filter((t) => t.realized_pnl_usd < 0).length,
+  };
+  const periodScratch =
+    periodSummary.count - periodSummary.wins - periodSummary.losses;
+  const periodWinRate =
+    periodSummary.count > 0 ? periodSummary.wins / periodSummary.count : 0;
+
+  // Asset / win-loss filters applied on top of the period set, for the
+  // table view below.
+  const filtered = inPeriod.filter((t) => {
     if (assetFilter !== "all" && t.asset !== assetFilter) return false;
     if (filter === "wins") return t.realized_pnl_usd > 0;
     if (filter === "losses") return t.realized_pnl_usd < 0;
@@ -64,20 +112,35 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
 
   return (
     <div className="space-y-6">
-      <Panel title="Realized PnL summary">
+      <Panel
+        title={`Realized PnL summary · ${PERIOD_LABELS[period]}`}
+        right={
+          <div className="flex gap-1 text-xs">
+            {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
+              <FilterPill
+                key={p}
+                active={period === p}
+                onClick={() => setPeriod(p)}
+              >
+                {PERIOD_LABELS[p]}
+              </FilterPill>
+            ))}
+          </div>
+        }
+      >
         <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
-          <Stat label="Total trades" value={fmtNum(summary.count, 0)} />
+          <Stat label="Total trades" value={fmtNum(periodSummary.count, 0)} />
           <Stat
             label="Total PnL"
             value={
               <span
                 className={
-                  summary.total_realized_pnl_usd >= 0
+                  periodSummary.total_realized_pnl_usd >= 0
                     ? "text-[var(--accent)]"
                     : "text-[var(--danger)]"
                 }
               >
-                {fmtUsd(summary.total_realized_pnl_usd)}
+                {fmtUsd(periodSummary.total_realized_pnl_usd)}
               </span>
             }
           />
@@ -85,7 +148,7 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
             label="Wins"
             value={
               <span className="text-[var(--accent)]">
-                {fmtNum(summary.wins, 0)}
+                {fmtNum(periodSummary.wins, 0)}
               </span>
             }
           />
@@ -93,24 +156,20 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
             label="Losses"
             value={
               <span className="text-[var(--danger)]">
-                {fmtNum(summary.losses, 0)}
+                {fmtNum(periodSummary.losses, 0)}
               </span>
             }
           />
           <Stat
             label="Win rate"
-            value={fmtPct(summary.win_rate, 1)}
-            sub={
-              summary.scratch > 0
-                ? `${summary.scratch} scratch`
-                : undefined
-            }
+            value={fmtPct(periodWinRate, 1)}
+            sub={periodScratch > 0 ? `${periodScratch} scratch` : undefined}
           />
         </div>
       </Panel>
 
       <Panel
-        title={`Trades (${filtered.length}/${all.length}) · filtered PnL ${fmtUsd(filteredPnl)}`}
+        title={`Trades (${filtered.length}/${inPeriod.length} in ${PERIOD_LABELS[period]}) · filtered PnL ${fmtUsd(filteredPnl)}`}
         right={
           <div className="flex flex-wrap gap-1 text-xs">
             <FilterPill

@@ -66,7 +66,8 @@ export const api = {
   decisions: (limit = 20) =>
     get<DecisionsResponse>(`/api/decisions?limit=${limit}`),
   fills: (limit = 50) => get<FillsResponse>(`/api/fills?limit=${limit}`),
-  trades: (limit = 100) => get<TradesResponse>(`/api/trades?limit=${limit}`),
+  trades: (limit = 100, days = 365) =>
+    get<TradesResponse>(`/api/trades?limit=${limit}&days=${days}`),
   cost: (hours = 24) => get<CostResponse>(`/api/cost?hours=${hours}`),
   runtime: () => get<RuntimeState>("/api/runtime"),
   pause: (paused: boolean) =>
