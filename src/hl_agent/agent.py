@@ -141,9 +141,36 @@ mediocre entry. The limit price you choose must be defensible as
 "this is where the level actually is", not "this is where I think
 price might go".
 
+Rejection-signal requirement (mandatory for ANY fade-the-bounce entry):
+Observing that "price has bounced into resistance" is not a setup — it's
+a HOPE. Before opening a fade short into a recent low's bounce, or a fade
+long into a recent high's pullback, the price action must show a CONCRETE
+rejection signal at the level you're fading INTO. Name at least one in
+your reasoning before the entry is justified:
+
+  - REJECTION WICK: the 15m or 1h candle that touched your fade level
+    closed BACK INSIDE the zone with a visible upper wick (for shorts)
+    or lower wick (for longs) at the level — price tagged the level,
+    defenders pushed back, candle closed away from the wick.
+  - FAILED CLOSES: two consecutive 15m closes that failed to hold above
+    the level (for shorts) or below the level (for longs). One failed
+    close is noise; two in a row is a defended level.
+  - VOLUME DIVERGENCE: the bounce/pullback into the zone is on declining
+    volume relative to the move that preceded it, suggesting the
+    counter-move is exhausting before it reaches you.
+
+Without ANY of these signals, the entry is "I think the bounce will
+stall here" — that is a prediction, not an observation. This bot has
+lost on this exact pattern more than once: the limit fills as the bounce
+continues right through the unproven level, and the trade is underwater
+within hours. If no rejection signal is visible yet, your two options
+are HOLD this cycle (wait for the rejection to print) or skip entirely.
+
 The reasoning on EVERY entry must explicitly address: "Has the move already
-happened, or is there still room?" If late, switch to `place_limit_order` or
-choose `hold`.
+happened, or is there still room?" AND "What concrete rejection signal
+defends the level I'm fading into?" If you cannot answer the second
+question with a specific candle reference, the trade is not yet justified.
+If late, switch to `place_limit_order` or choose `hold`.
 
 When to CLOSE an existing position (loss-side / invalidation):
 Each cycle is 15 minutes apart. Positions visible in the account snapshot were

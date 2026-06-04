@@ -23,6 +23,14 @@ class ActionResult:
 PERP_MAX_DECIMALS = 6  # Hyperliquid: max price decimals = MAX_DECIMALS - sz_decimals
 PRICE_SIG_FIGS = 5     # Hyperliquid: prices have at most 5 significant figures
 
+# Correlation block — assets in this set are treated as one risk unit for
+# the per-cycle stack check. BTC and ETH run 80-90% correlated intraday
+# on this venue; opening same-direction entries on both in one cycle has
+# been a recurring losing pattern. The prompt also discourages it as a
+# soft rule; this is the hard backstop. If/when we trade more assets,
+# this becomes a correlation matrix instead of a flat set.
+CORRELATED_ASSETS = {"BTC", "ETH"}
+
 
 def _coin_size_from_usd(usd: float, price: float, sz_decimals: int) -> float:
     if price <= 0:
@@ -73,6 +81,43 @@ class Executor:
         self.cycle_id = cycle_id
         self.dry_run = dry_run
 
+    def _check_correlation(
+        self, asset: str, side: str, reduce_only: bool
+    ) -> str | None:
+        """Reject if another correlated asset already had a same-direction
+        opening fill in this cycle. Returns the rejection reason or None.
+
+        Same-cycle stack is the only case blocked — cross-cycle entries
+        are allowed (matches the prompt's "wait one cycle for the other
+        asset's price action to confirm independently" rule). Reduce-only
+        orders bypass the check since they're closing/reducing, not
+        adding correlated risk.
+
+        Detection uses the fills table (not account.positions) because the
+        first leg of a same-cycle stack hasn't reached the account
+        snapshot yet — the snapshot is taken at cycle start, before any
+        of this cycle's orders fired."""
+        if reduce_only:
+            return None
+        if asset not in CORRELATED_ASSETS:
+            return None
+        opens = self.storage.opens_in_cycle_by_side(self.cycle_id)
+        for other_asset, other_side in opens.items():
+            if other_asset == asset or other_asset not in CORRELATED_ASSETS:
+                continue
+            if other_side != side:
+                continue
+            return (
+                f"correlated same-direction stack rejected: "
+                f"{other_asset} {other_side} was already opened in this "
+                f"cycle ({self.cycle_id}). Prompt rule: wait one cycle "
+                f"for {other_asset}'s price action to confirm "
+                f"independently before adding {asset}. If both setups "
+                f"are independently compelling next cycle, this block "
+                f"will lift."
+            )
+        return None
+
     def apply(
         self,
         tool: str,
@@ -107,6 +152,12 @@ class Executor:
         side = args["side"]
         usd_size = float(args["usd_size"])
         reduce_only = bool(args.get("reduce_only", False))
+
+        corr_reason = self._check_correlation(asset, side, reduce_only)
+        if corr_reason:
+            return ActionResult(
+                "place_market_order", args, accepted=False, reason=corr_reason
+            )
 
         check = risk.check_open_or_increase(
             account=account,
@@ -168,6 +219,12 @@ class Executor:
         limit_px = float(args["limit_px"])
         tif = args.get("tif", "Gtc")
         reduce_only = bool(args.get("reduce_only", False))
+
+        corr_reason = self._check_correlation(asset, side, reduce_only)
+        if corr_reason:
+            return ActionResult(
+                "place_limit_order", args, accepted=False, reason=corr_reason
+            )
 
         check = risk.check_open_or_increase(
             account=account,

@@ -239,6 +239,23 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def opens_in_cycle_by_side(self, cycle_id: str) -> dict[str, str]:
+        """Map of asset → 'buy'|'sell' for opening fills logged in this
+        cycle_id. Used by the correlation block in Executor to detect
+        same-cycle stacking on correlated assets. If an asset has multiple
+        opens in one cycle, the first-logged side is returned (averaging
+        in stays same-direction; cancel-then-flip would be unusual)."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT asset, side FROM fills WHERE cycle_id = ? "
+                "AND side IN ('buy', 'sell') ORDER BY id ASC",
+                (cycle_id,),
+            ).fetchall()
+        out: dict[str, str] = {}
+        for asset, side in rows:
+            out.setdefault(asset, side)
+        return out
+
     def log_token_usage(
         self,
         *,
