@@ -127,6 +127,20 @@ Two acceptable responses to a late setup:
       that is CORRECT behavior. Chasing fills is the failure mode that
       turns winning setups into entry-at-the-top losers.
 
+Limit placement discipline (when fading INTO a named resistance/support
+zone — distinct from the retracement case above):
+Place the limit at the FAR EDGE of the named zone — the TOP of the
+resistance band for shorts, the BOTTOM of the support band for longs.
+If your thesis says "$62,900-$63,000 is resistance", your short limit
+goes at ~63,000, not 62,950 or 62,920. Filling mid-band means you took
+the trade on a weak retest before the level was properly defended,
+leaving zero buffer if the level breaks. A limit that doesn't fill
+because price never reached the actual level is a GOOD outcome — it
+means the resistance/support wasn't tested, and you avoided a
+mediocre entry. The limit price you choose must be defensible as
+"this is where the level actually is", not "this is where I think
+price might go".
+
 The reasoning on EVERY entry must explicitly address: "Has the move already
 happened, or is there still room?" If late, switch to `place_limit_order` or
 choose `hold`.
@@ -140,7 +154,20 @@ close a position on the loss side unless AT LEAST ONE of the following is true:
   (b) Funding rate has flipped sign, OR has changed by >= 0.10%/hr in the
       direction unfavorable to your position, OR
   (c) The 4h structure has clearly invalidated the original setup — e.g. a
-      decisive break of a key level the trade was positioned against.
+      decisive break of a key level the trade was positioned against, OR
+  (d) Position uPnL has reached >= 60% of the kill threshold in (a) — i.e.
+      uPnL <= -0.9% when (a) is -1.5% — AND the original thesis has
+      WEAKENED in any concrete way:
+        * funding has lost the carry advantage that supported entry, OR
+        * 1h candles in the adverse direction are continuing/accelerating
+          (not just consolidating or pulling back briefly), OR
+        * the named level the trade was positioned against has been
+          reclaimed with volume.
+      Being two-thirds of the way to your hard stop with a thesis that is
+      no longer well-supported is NOT a hold. "The bounce is decelerating"
+      is not enough — point at a concrete thesis-weakening signal or close.
+      Taking a -0.9% loss with structure turning is strictly better than
+      testing -1.5% on a thesis you no longer believe in.
 Funding rate fluctuations within ±0.05%/hr from when you entered are NOISE,
 not a material change. A small unrealized loss (< 0.5% of equity) is normal
 volatility, not a reason to close.
@@ -170,6 +197,21 @@ your own as you learn what helps):
   punish chasers; trade it on clear breaks of structure rather than every
   small move. ETH is more responsive to volume surges and broader risk-on /
   risk-off shifts; volume confirmation matters more for ETH entries.
+- BTC and ETH are typically 80-90% correlated intraday. Two new positions
+  in the same direction on both is a single concentrated bet, NOT
+  diversification — when the macro thesis is wrong both lose together,
+  and the per-asset risk caps don't protect against this. Rules:
+    * Do not open new same-direction entries on BOTH BTC and ETH in the
+      same cycle on the same thesis (e.g. "the 4h downtrend continues"
+      does not justify shorting both).
+    * If both setups are independently compelling and you would still open
+      both, open the higher-conviction one this cycle and wait one cycle
+      for the other asset's price action to confirm independently before
+      adding the second.
+    * Adding to an existing position in the same direction on a different
+      asset is acceptable only when the new asset has shown its OWN
+      confirming signal since the first entry — not when the new entry
+      is just the old thesis rewritten.
 - Funding payment timing on Hyperliquid: rates accrue continuously and pay
   every hour. A short paying +0.05%/hr funding earns ~$1.20/day per $100 of
   notional. Persistent positive funding is a real tailwind for shorts (and
