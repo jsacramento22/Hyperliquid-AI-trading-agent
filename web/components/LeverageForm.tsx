@@ -82,10 +82,12 @@ export function LeverageForm() {
       }
     >
       <p className="text-xs text-[var(--muted)] mb-4 max-w-xl">
-        Per-position leverage on Hyperliquid. Higher leverage means tighter
-        liquidation distance for the same notional. The bot's portfolio
-        leverage cap (in <span className="font-mono">Risk limits</span>) is a
-        separate, stricter check on total notional / equity.
+        Exchange-side margin setting on Hyperliquid — controls{" "}
+        <strong>liquidation distance</strong> per position. Higher leverage
+        = less margin held = position dies on a smaller adverse move. Does
+        NOT control how big the bot sizes trades; that's{" "}
+        <span className="font-mono">Max portfolio leverage</span> below
+        under Risk limits.
       </p>
 
       <form

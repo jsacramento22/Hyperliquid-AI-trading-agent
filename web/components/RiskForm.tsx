@@ -16,10 +16,13 @@ const FIELDS: {
 }[] = [
   {
     key: "max_leverage",
-    label: "Max leverage",
+    label: "Max portfolio leverage",
     step: 0.1,
     format: "num",
-    hint: "Cap on implied total notional / equity. 1×–50×.",
+    hint:
+      "Pre-trade cap on TOTAL open notional ÷ equity. Stops the bot from " +
+      "sizing trades too large. Independent of exchange margin — doesn't " +
+      "affect liquidation distance.",
   },
   {
     key: "max_position_pct_per_asset",
@@ -98,6 +101,13 @@ export function RiskForm() {
         ) : null
       }
     >
+      <p className="text-xs text-[var(--muted)] mb-4 max-w-xl">
+        Pre-trade caps the bot enforces in code. Orders that would breach
+        any of these are rejected before being sent. These are independent
+        from exchange-side margin (Position leverage above), which controls
+        liquidation distance, not order sizing.
+      </p>
+
       <form
         onSubmit={(e) => {
           e.preventDefault();
