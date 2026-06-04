@@ -189,15 +189,16 @@ def main() -> None:
         max_instances=1,
         coalesce=True,
     )
-    tp_on = settings.config.take_profit.enabled and settings.config.take_profit.pct > 0
-    sl_on = settings.config.stop_loss.enabled and settings.config.stop_loss.pct > 0
-    if tp_on or sl_on:
-        # Both share the same monitor tick; use TP's interval as the cadence
-        # (or SL's if TP is disabled).
-        interval = (
-            settings.config.take_profit.check_interval_seconds if tp_on
-            else settings.config.stop_loss.check_interval_seconds
-        )
+    # Always register the monitor job (gated only on cadence > 0). Whether
+    # TP/SL actually fire is decided per-tick by check_and_close reading
+    # the effective config — so flipping the YAML enabled flags or the UI
+    # toggles takes effect without a restart. If both YAML flags are off
+    # the tick does ~1ms of DB reads and returns; harmless.
+    interval = (
+        settings.config.take_profit.check_interval_seconds
+        or settings.config.stop_loss.check_interval_seconds
+    )
+    if interval > 0:
         sched.add_job(
             lambda: monitor.safe_check(settings),
             "interval",
@@ -206,24 +207,20 @@ def main() -> None:
             max_instances=1,
             coalesce=True,
         )
-        if tp_on:
-            log.info(
-                "auto take-profit: every %ds at +%.2f%% gain "
-                "(req=%d ticks, slippage=%.2f%%)",
-                interval,
-                settings.config.take_profit.pct * 100,
-                settings.config.take_profit.require_consecutive_checks,
-                settings.config.take_profit.close_slippage * 100,
-            )
-        if sl_on:
-            log.info(
-                "auto stop-loss:   every %ds at -%.2f%% loss "
-                "(req=%d ticks, slippage=%.2f%%)",
-                interval,
-                settings.config.stop_loss.pct * 100,
-                settings.config.stop_loss.require_consecutive_checks,
-                settings.config.stop_loss.close_slippage * 100,
-            )
+        tp = settings.config.take_profit
+        sl = settings.config.stop_loss
+        log.info(
+            "auto take-profit: every %ds, YAML %s at +%.2f%% (live-editable)",
+            interval,
+            "ON" if tp.enabled and tp.pct > 0 else "OFF",
+            tp.pct * 100,
+        )
+        log.info(
+            "auto stop-loss:   every %ds, YAML %s at -%.2f%% (live-editable)",
+            interval,
+            "ON" if sl.enabled and sl.pct > 0 else "OFF",
+            sl.pct * 100,
+        )
 
     def _shutdown(signum, _frame):
         log.info("signal %s received — shutting scheduler down", signum)

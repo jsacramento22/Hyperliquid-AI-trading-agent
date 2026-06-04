@@ -188,17 +188,22 @@ def check_and_close(
 ) -> list[CloseResult]:
     """One monitor pass: fetch account state, close any position whose uPnL
     has crossed the take-profit or stop-loss threshold for the configured
-    number of consecutive ticks."""
-    cfg_tp = settings.config.take_profit
-    cfg_sl = settings.config.stop_loss
+    number of consecutive ticks.
+
+    Read TP/SL config through runtime so UI toggles (enabled / pct) take
+    effect on the next tick without needing a restart. The scheduler
+    interval (`check_interval_seconds`) still comes from the YAML config
+    at boot time since it's wired into the scheduler job."""
+    storage = Storage(settings.storage_path)
+    if runtime.is_paused(storage):
+        return []
+
+    cfg_tp = runtime.effective_take_profit(settings, storage)
+    cfg_sl = runtime.effective_stop_loss(settings, storage)
 
     tp_active = cfg_tp.enabled and cfg_tp.pct > 0
     sl_active = cfg_sl.enabled and cfg_sl.pct > 0
     if not (tp_active or sl_active):
-        return []
-
-    storage = Storage(settings.storage_path)
-    if runtime.is_paused(storage):
         return []
 
     client = build_client(settings)

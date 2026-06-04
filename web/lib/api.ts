@@ -7,6 +7,8 @@ import type {
   Health,
   LeverageApplyResponse,
   ModelApplyResponse,
+  MonitorApplyResponse,
+  MonitorPatch,
   Risk,
   RuntimeState,
   TradesResponse,
@@ -81,4 +83,6 @@ export const api = {
     post<LeverageApplyResponse>("/api/leverage", body),
   setModel: (model: string) =>
     post<ModelApplyResponse>("/api/model", { model }),
+  setMonitor: (patch: MonitorPatch) =>
+    post<MonitorApplyResponse>("/api/monitor", patch),
 };

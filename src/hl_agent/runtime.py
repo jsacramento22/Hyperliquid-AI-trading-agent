@@ -3,7 +3,7 @@ and the UI. Lives in the SQLite `runtime_state` table so all readers see the
 same values without needing IPC."""
 from __future__ import annotations
 
-from .settings import RiskConfig, Settings
+from .settings import RiskConfig, Settings, StopLossConfig, TakeProfitConfig
 from .storage import Storage
 
 KEY_PAUSED = "paused"
@@ -11,6 +11,13 @@ KEY_RISK_OVERRIDES = "risk_overrides"
 KEY_POSITION_LEVERAGE = "position_leverage"
 KEY_POSITION_MARGIN_CROSS = "position_margin_cross"
 KEY_MODEL = "model"
+KEY_TP_OVERRIDES = "take_profit_overrides"
+KEY_SL_OVERRIDES = "stop_loss_overrides"
+
+# Only these TP/SL fields are runtime-mutable from the UI. The operational
+# knobs (check_interval_seconds, require_consecutive_checks, close_slippage)
+# stay YAML-only — they affect scheduler timing and need a restart anyway.
+_MONITOR_FIELDS = {"enabled", "pct"}
 
 # Allowlist for the live model switch. Must match keys in cost.PRICING so
 # cost calculations stay correct. Adding a new model here AND a pricing
@@ -115,3 +122,65 @@ def effective_model(settings: Settings, storage: Storage) -> str:
     one-cycle cost bump after each change."""
     override = get_model_override(storage)
     return override if override else settings.config.model
+
+
+# --- TP/SL runtime controls -----------------------------------------------
+# Only the enabled flag and the pct threshold are runtime-mutable; the rest
+# of the TakeProfit/StopLoss config stays YAML-only.
+
+def _clean_monitor_overrides(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    if "enabled" in raw:
+        out["enabled"] = bool(raw["enabled"])
+    if "pct" in raw:
+        try:
+            out["pct"] = float(raw["pct"])
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def get_tp_overrides(storage: Storage) -> dict:
+    return _clean_monitor_overrides(storage.get_runtime_value(KEY_TP_OVERRIDES))
+
+
+def set_tp_overrides(storage: Storage, overrides: dict) -> None:
+    storage.set_runtime_value(
+        KEY_TP_OVERRIDES,
+        {**get_tp_overrides(storage), **_clean_monitor_overrides(overrides)},
+    )
+
+
+def clear_tp_overrides(storage: Storage) -> None:
+    storage.set_runtime_value(KEY_TP_OVERRIDES, {})
+
+
+def get_sl_overrides(storage: Storage) -> dict:
+    return _clean_monitor_overrides(storage.get_runtime_value(KEY_SL_OVERRIDES))
+
+
+def set_sl_overrides(storage: Storage, overrides: dict) -> None:
+    storage.set_runtime_value(
+        KEY_SL_OVERRIDES,
+        {**get_sl_overrides(storage), **_clean_monitor_overrides(overrides)},
+    )
+
+
+def clear_sl_overrides(storage: Storage) -> None:
+    storage.set_runtime_value(KEY_SL_OVERRIDES, {})
+
+
+def effective_take_profit(
+    settings: Settings, storage: Storage
+) -> TakeProfitConfig:
+    base = settings.config.take_profit.model_dump()
+    return TakeProfitConfig(**{**base, **get_tp_overrides(storage)})
+
+
+def effective_stop_loss(
+    settings: Settings, storage: Storage
+) -> StopLossConfig:
+    base = settings.config.stop_loss.model_dump()
+    return StopLossConfig(**{**base, **get_sl_overrides(storage)})

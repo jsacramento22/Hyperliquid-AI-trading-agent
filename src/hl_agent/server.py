@@ -55,6 +55,17 @@ class ModelBody(BaseModel):
     model: str = Field(min_length=1)
 
 
+class MonitorBody(BaseModel):
+    """Live-edit take-profit and stop-loss. All fields optional — only the
+    ones provided are applied. `pct` is the magnitude of the move (e.g.
+    0.015 = 1.5%). pct=0 effectively pauses that side, but the `enabled`
+    flag is the cleaner switch."""
+    tp_enabled: bool | None = None
+    tp_pct: float | None = Field(default=None, gt=0.0, lt=1.0)
+    sl_enabled: bool | None = None
+    sl_pct: float | None = Field(default=None, gt=0.0, lt=1.0)
+
+
 def _parse_decision(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -114,19 +125,14 @@ def create_app(
                 max_instances=1,
                 coalesce=True,
             )
-            tp_on = (
-                settings.config.take_profit.enabled
-                and settings.config.take_profit.pct > 0
+            # Always register the monitor job so the UI toggle can re-enable
+            # TP/SL without a server restart. Per-tick gating in
+            # monitor.check_and_close handles the disabled case.
+            interval = (
+                settings.config.take_profit.check_interval_seconds
+                or settings.config.stop_loss.check_interval_seconds
             )
-            sl_on = (
-                settings.config.stop_loss.enabled
-                and settings.config.stop_loss.pct > 0
-            )
-            if tp_on or sl_on:
-                interval = (
-                    settings.config.take_profit.check_interval_seconds if tp_on
-                    else settings.config.stop_loss.check_interval_seconds
-                )
+            if interval > 0:
                 scheduler.add_job(
                     lambda: monitor.safe_check(settings),
                     "interval",
@@ -143,23 +149,20 @@ def create_app(
                 settings.config.model,
                 settings.config.assets,
             )
-            if tp_on:
+            if interval > 0:
+                tp = settings.config.take_profit
+                sl = settings.config.stop_loss
                 log.info(
-                    "auto take-profit: every %ds at +%.2f%% gain "
-                    "(req=%d ticks, slippage=%.2f%%)",
+                    "auto take-profit: every %ds, YAML %s at +%.2f%% (live-editable)",
                     interval,
-                    settings.config.take_profit.pct * 100,
-                    settings.config.take_profit.require_consecutive_checks,
-                    settings.config.take_profit.close_slippage * 100,
+                    "ON" if tp.enabled and tp.pct > 0 else "OFF",
+                    tp.pct * 100,
                 )
-            if sl_on:
                 log.info(
-                    "auto stop-loss:   every %ds at -%.2f%% loss "
-                    "(req=%d ticks, slippage=%.2f%%)",
+                    "auto stop-loss:   every %ds, YAML %s at -%.2f%% (live-editable)",
                     interval,
-                    settings.config.stop_loss.pct * 100,
-                    settings.config.stop_loss.require_consecutive_checks,
-                    settings.config.stop_loss.close_slippage * 100,
+                    "ON" if sl.enabled and sl.pct > 0 else "OFF",
+                    sl.pct * 100,
                 )
             if delay > 1:
                 log.info(
@@ -329,6 +332,8 @@ def create_app(
 
     @app.get("/api/runtime")
     def get_runtime():
+        eff_tp = runtime.effective_take_profit(settings, storage)
+        eff_sl = runtime.effective_stop_loss(settings, storage)
         return {
             "paused": runtime.is_paused(storage),
             "risk_overrides": runtime.get_risk_overrides(storage) or {},
@@ -349,6 +354,28 @@ def create_app(
                 "base": settings.config.model,
                 "override": runtime.get_model_override(storage),
                 "supported": list(runtime.SUPPORTED_MODELS),
+            },
+            "take_profit": {
+                "effective": {
+                    "enabled": eff_tp.enabled,
+                    "pct": eff_tp.pct,
+                },
+                "base": {
+                    "enabled": settings.config.take_profit.enabled,
+                    "pct": settings.config.take_profit.pct,
+                },
+                "overrides": runtime.get_tp_overrides(storage),
+            },
+            "stop_loss": {
+                "effective": {
+                    "enabled": eff_sl.enabled,
+                    "pct": eff_sl.pct,
+                },
+                "base": {
+                    "enabled": settings.config.stop_loss.enabled,
+                    "pct": settings.config.stop_loss.pct,
+                },
+                "overrides": runtime.get_sl_overrides(storage),
             },
         }
 
@@ -372,6 +399,43 @@ def create_app(
             "model": runtime.effective_model(settings, storage),
             "override": runtime.get_model_override(storage),
             "base": settings.config.model,
+        }
+
+    @app.post("/api/monitor")
+    def post_monitor(body: MonitorBody):
+        """Live-edit the take-profit / stop-loss monitor. Each side has an
+        independent enabled flag and pct threshold. Changes take effect on
+        the next 60s monitor tick, no restart needed.
+
+        Either side can be flipped off without affecting the other — pausing
+        only TP leaves SL armed and vice versa."""
+        tp_patch = {}
+        if body.tp_enabled is not None:
+            tp_patch["enabled"] = body.tp_enabled
+        if body.tp_pct is not None:
+            tp_patch["pct"] = body.tp_pct
+        if tp_patch:
+            runtime.set_tp_overrides(storage, tp_patch)
+
+        sl_patch = {}
+        if body.sl_enabled is not None:
+            sl_patch["enabled"] = body.sl_enabled
+        if body.sl_pct is not None:
+            sl_patch["pct"] = body.sl_pct
+        if sl_patch:
+            runtime.set_sl_overrides(storage, sl_patch)
+
+        eff_tp = runtime.effective_take_profit(settings, storage)
+        eff_sl = runtime.effective_stop_loss(settings, storage)
+        return {
+            "take_profit": {
+                "effective": {"enabled": eff_tp.enabled, "pct": eff_tp.pct},
+                "overrides": runtime.get_tp_overrides(storage),
+            },
+            "stop_loss": {
+                "effective": {"enabled": eff_sl.enabled, "pct": eff_sl.pct},
+                "overrides": runtime.get_sl_overrides(storage),
+            },
         }
 
     @app.post("/api/leverage")

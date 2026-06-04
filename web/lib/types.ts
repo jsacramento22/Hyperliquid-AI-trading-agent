@@ -198,6 +198,20 @@ export type ModelState = {
   supported: string[];     // allowlist the UI may pick from
 };
 
+// Take-profit / stop-loss monitor state. Each side has independently
+// runtime-mutable `enabled` and `pct`; everything else (intervals,
+// streak count, slippage) stays YAML-only.
+export type MonitorSide = {
+  enabled: boolean;
+  pct: number;            // 0.015 = 1.5%
+};
+
+export type MonitorSideState = {
+  effective: MonitorSide;
+  base: MonitorSide;
+  overrides: Partial<MonitorSide>;
+};
+
 export type RuntimeState = {
   paused: boolean;
   risk_overrides: Partial<Risk>;
@@ -206,6 +220,21 @@ export type RuntimeState = {
   position_leverage: LeverageState;
   position_margin_cross: MarginCrossState;
   model: ModelState;
+  take_profit: MonitorSideState;
+  stop_loss: MonitorSideState;
+};
+
+// Body for POST /api/monitor. Only set the fields you want to change.
+export type MonitorPatch = {
+  tp_enabled?: boolean;
+  tp_pct?: number;
+  sl_enabled?: boolean;
+  sl_pct?: number;
+};
+
+export type MonitorApplyResponse = {
+  take_profit: { effective: MonitorSide; overrides: Partial<MonitorSide> };
+  stop_loss: { effective: MonitorSide; overrides: Partial<MonitorSide> };
 };
 
 export type LeverageApplyResponse = {
