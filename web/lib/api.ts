@@ -1,5 +1,6 @@
 import type {
   Account,
+  ClosePositionResponse,
   CostResponse,
   DecisionsResponse,
   EquityResponse,
@@ -85,4 +86,9 @@ export const api = {
     post<ModelApplyResponse>("/api/model", { model }),
   setMonitor: (patch: MonitorPatch) =>
     post<MonitorApplyResponse>("/api/monitor", patch),
+  closePosition: (asset: string, slippage?: number) =>
+    post<ClosePositionResponse>(
+      "/api/close_position",
+      slippage === undefined ? { asset } : { asset, slippage },
+    ),
 };

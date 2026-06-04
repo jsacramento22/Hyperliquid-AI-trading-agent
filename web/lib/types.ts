@@ -248,3 +248,12 @@ export type ModelApplyResponse = {
   override: string | null;
   base: string;
 };
+
+export type ClosePositionResponse = {
+  asset: string;
+  side: "long" | "short";
+  size: number;
+  upnl_usd: number;
+  cycle_id: string;
+  response: unknown;
+};

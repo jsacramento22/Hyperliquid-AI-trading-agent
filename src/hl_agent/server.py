@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -64,6 +65,15 @@ class MonitorBody(BaseModel):
     tp_pct: float | None = Field(default=None, gt=0.0, lt=1.0)
     sl_enabled: bool | None = None
     sl_pct: float | None = Field(default=None, gt=0.0, lt=1.0)
+
+
+class ClosePositionBody(BaseModel):
+    """Manually flatten one position via market_close. Slippage default 0.5%
+    matches the auto take-profit / stop-loss monitor. Asset is uppercased
+    server-side and validated against the allowed-assets list before any
+    exchange call."""
+    asset: str = Field(min_length=1, max_length=10)
+    slippage: float = Field(default=0.005, gt=0.0, lt=0.5)
 
 
 def _parse_decision(row: dict) -> dict:
@@ -399,6 +409,99 @@ def create_app(
             "model": runtime.effective_model(settings, storage),
             "override": runtime.get_model_override(storage),
             "base": settings.config.model,
+        }
+
+    @app.post("/api/close_position")
+    def post_close_position(body: ClosePositionBody):
+        """Manually flatten a position via market_close. Logged to the
+        decisions table with model='manual-close' so it shows up in the
+        dashboard's decision log alongside agent and auto-close actions.
+
+        Returns 400 for unknown asset, 404 when no open position exists for
+        the asset, 502 when the exchange call itself fails."""
+        asset = body.asset.upper()
+        if asset not in settings.config.assets:
+            raise HTTPException(
+                400, f"asset {asset!r} not in allowed list {settings.config.assets}"
+            )
+
+        try:
+            client = build_client(settings)
+        except RuntimeError as e:
+            raise HTTPException(500, f"client unavailable: {e}")
+
+        state = account_mod.get_state(client)
+        pos = next(
+            (p for p in state.positions if p.asset == asset and p.size != 0),
+            None,
+        )
+        if pos is None:
+            raise HTTPException(404, f"no open position for {asset}")
+
+        side = "long" if pos.size > 0 else "short"
+        cycle_id = (
+            f"MANUAL-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
+            f"{uuid.uuid4().hex[:6]}"
+        )
+
+        try:
+            resp = client.exchange.market_close(
+                coin=asset, slippage=body.slippage
+            )
+        except Exception as e:
+            log.exception("manual close failed for %s", asset)
+            raise HTTPException(502, f"market_close failed: {e}")
+
+        storage.log_fill(
+            cycle_id=cycle_id,
+            asset=asset,
+            side="close",
+            requested_usd=None,
+            raw_response=resp,
+        )
+        action_record = {
+            "tool": "close_position",
+            "args": {"asset": asset, "reason": "manual"},
+            "accepted": True,
+            "reason": (
+                f"Manual close via UI ({side}, uPnL ${pos.unrealized_pnl_usd:.2f}, "
+                f"slippage {body.slippage * 100:.2f}%)"
+            ),
+            "response": resp,
+        }
+        storage.log_decision(
+            cycle_id=cycle_id,
+            model="manual-close",
+            network=settings.config.network,
+            reasoning=(
+                f"Manually closed {asset} {side} via dashboard. "
+                f"uPnL at close: ${pos.unrealized_pnl_usd:.2f}."
+            ),
+            raw_tool_calls=[
+                {
+                    "name": "close_position",
+                    "input": {"asset": asset, "reason": "manual"},
+                }
+            ],
+            executed_actions=[action_record],
+            rejected_actions=[],
+        )
+
+        log.info(
+            "manual close: %s %s (uPnL $%.2f) — cycle %s",
+            asset,
+            side,
+            pos.unrealized_pnl_usd,
+            cycle_id,
+        )
+
+        return {
+            "asset": asset,
+            "side": side,
+            "size": abs(pos.size),
+            "upnl_usd": pos.unrealized_pnl_usd,
+            "cycle_id": cycle_id,
+            "response": resp,
         }
 
     @app.post("/api/monitor")
