@@ -33,7 +33,8 @@ export function PositionsTable() {
       {positions.length === 0 ? (
         <div className="text-sm text-[var(--muted)]">No open positions.</div>
       ) : (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="text-left text-[var(--muted)] text-xs uppercase tracking-wide">
               <th className="py-1 pr-3">Asset</th>
@@ -104,6 +105,7 @@ export function PositionsTable() {
             })}
           </tbody>
         </table>
+        </div>
       )}
 
       {orders.length > 0 && (
@@ -111,7 +113,8 @@ export function PositionsTable() {
           <div className="mt-5 mb-2 text-xs uppercase tracking-wide text-[var(--muted)]">
             Open orders
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="text-left text-[var(--muted)] text-xs uppercase tracking-wide">
                 <th className="py-1 pr-3">OID</th>
@@ -142,6 +145,7 @@ export function PositionsTable() {
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
 
