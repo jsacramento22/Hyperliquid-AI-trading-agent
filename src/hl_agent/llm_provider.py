@@ -83,10 +83,16 @@ class CompletionResult:
     """What every provider.complete() returns. `content` holds blocks
     (native Anthropic objects OR our TextBlock/ToolUseBlock shims) and the
     rest mirrors the Anthropic response shape so the existing
-    `agent.run_cycle` loop can consume both transparently."""
+    `agent.run_cycle` loop can consume both transparently.
+
+    `served_by` is set when an aggregator (OpenRouter) tells us which
+    backing provider actually served the request — useful for logging
+    when fallbacks fire. None for direct providers (Anthropic) or when
+    the aggregator didn't surface it."""
     content: list[Any]
     stop_reason: str
     usage: Any  # native Anthropic Usage OR our Usage shim
+    served_by: str | None = None
 
 
 # --- Protocol -------------------------------------------------------------
@@ -189,7 +195,12 @@ class OpenAICompatibleProvider:
     Together, Fireworks, Groq, etc. by changing base_url + api_key.
     Translates the agent's Anthropic-shape messages/tools into OpenAI's
     chat-completions shape on the way out, and the response back into our
-    block shims on the way in."""
+    block shims on the way in.
+
+    `extra_body` lets the caller pass aggregator-specific routing config
+    (e.g. OpenRouter's `provider: {order, quantizations, ...}`). It's
+    forwarded verbatim into chat.completions.create()'s extra_body
+    parameter and merged into the request body."""
 
     def __init__(
         self,
@@ -197,12 +208,14 @@ class OpenAICompatibleProvider:
         api_key: str,
         base_url: str,
         default_headers: dict[str, str] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             default_headers=default_headers or {},
         )
+        self._extra_body = extra_body or {}
 
     def complete(
         self,
@@ -224,6 +237,8 @@ class OpenAICompatibleProvider:
         if oai_tools:
             kwargs["tools"] = oai_tools
             kwargs["tool_choice"] = "auto"
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
 
         resp = self.client.chat.completions.create(**kwargs)
 
@@ -252,10 +267,14 @@ class OpenAICompatibleProvider:
             input_tokens=getattr(resp.usage, "prompt_tokens", 0) or 0,
             output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
         )
+        # OpenRouter surfaces the actual backing provider on the response.
+        # None for plain OpenAI-protocol providers that don't aggregate.
+        served_by = getattr(resp, "provider", None)
         return CompletionResult(
             content=content_blocks,
             stop_reason=stop_reason,
             usage=usage,
+            served_by=served_by,
         )
 
 
@@ -395,6 +414,20 @@ def build_provider(
             default_headers={
                 "HTTP-Referer": "https://github.com/jsacramento22/Hyperliquid-AI-trading-agent",
                 "X-Title": "hl-agent",
+            },
+            # Routing: pin to Novita first (FP8, native DeepSeek
+            # quantization, better reported tool-use reliability) but
+            # allow fallback to ANY FP8 provider so a Novita outage
+            # doesn't kill the cycle. The quantizations filter
+            # explicitly excludes DeepInfra's FP4 "Turbo" variant —
+            # we want consistent precision, not lowest-cost-at-the-
+            # expense-of-quality. Cost delta vs unpinned: ~$0.04/day.
+            extra_body={
+                "provider": {
+                    "order": ["novita"],
+                    "allow_fallbacks": True,
+                    "quantizations": ["fp8"],
+                }
             },
         )
     raise ValueError(

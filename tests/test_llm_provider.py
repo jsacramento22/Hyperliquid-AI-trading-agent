@@ -232,6 +232,7 @@ class _FakeChoice:
 class _FakeResponse:
     choices: list
     usage: _FakeUsage
+    provider: str | None = None  # OpenRouter surfaces backing provider here
 
 
 class _FakeOpenAIClient:
@@ -250,9 +251,12 @@ class _FakeOpenAIClient:
         return self._response
 
 
-def _make_provider_with_response(resp: _FakeResponse) -> OpenAICompatibleProvider:
+def _make_provider_with_response(
+    resp: _FakeResponse, *, extra_body: dict | None = None
+) -> OpenAICompatibleProvider:
     p = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
     p.client = _FakeOpenAIClient(resp)
+    p._extra_body = extra_body or {}
     return p
 
 
@@ -414,3 +418,110 @@ def test_factory_anthropic_with_key_builds() -> None:
 def test_factory_openrouter_with_key_builds() -> None:
     p = build_provider(provider="openrouter", openrouter_api_key="sk-or-fake")
     assert isinstance(p, OpenAICompatibleProvider)
+
+
+# --- OpenRouter routing: pin to Novita FP8 ---------------------------------
+
+
+def test_factory_openrouter_pins_novita_fp8() -> None:
+    """The OpenRouter provider must ship with a routing config that pins
+    Novita first, allows fallback to any FP8 backing provider, and
+    explicitly excludes FP4 quantizations (DeepInfra's Turbo variant).
+    Quality consistency for the trading bot."""
+    p = build_provider(provider="openrouter", openrouter_api_key="sk-or-fake")
+    assert p._extra_body == {
+        "provider": {
+            "order": ["novita"],
+            "allow_fallbacks": True,
+            "quantizations": ["fp8"],
+        }
+    }
+
+
+def test_openai_provider_forwards_extra_body() -> None:
+    """When the provider is constructed with extra_body, every call must
+    forward it via the openai SDK's extra_body kwarg so OpenRouter
+    receives the routing config in the request body."""
+    fake = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=1, completion_tokens=1),
+    )
+    routing = {"provider": {"order": ["novita"], "quantizations": ["fp8"]}}
+    p = _make_provider_with_response(fake, extra_body=routing)
+    p.complete(
+        system="s", tools=[],
+        messages=[{"role": "user", "content": "go"}],
+        model="x", max_tokens=10,
+    )
+    assert p.client.last_call["extra_body"] == routing
+
+
+def test_openai_provider_omits_extra_body_when_empty() -> None:
+    """No extra_body configured → don't send the kwarg at all (some
+    OpenAI-compatible providers reject unknown top-level fields)."""
+    fake = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=1, completion_tokens=1),
+    )
+    p = _make_provider_with_response(fake)  # no extra_body
+    p.complete(
+        system="s", tools=[],
+        messages=[{"role": "user", "content": "go"}],
+        model="x", max_tokens=10,
+    )
+    assert "extra_body" not in p.client.last_call
+
+
+def test_openai_provider_captures_served_by_when_present() -> None:
+    """OpenRouter sets `provider` on the response to indicate which
+    backing provider actually served the request — capture it so a
+    Novita→Fireworks fallback is visible in logs."""
+    fake = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=1, completion_tokens=1),
+        provider="Novita",
+    )
+    p = _make_provider_with_response(fake)
+    result = p.complete(
+        system="s", tools=[],
+        messages=[{"role": "user", "content": "go"}],
+        model="x", max_tokens=10,
+    )
+    assert result.served_by == "Novita"
+
+
+def test_openai_provider_served_by_none_when_missing() -> None:
+    """Plain OpenAI-protocol providers (not aggregators) don't surface a
+    provider field. CompletionResult.served_by should be None, not crash."""
+    fake = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=1, completion_tokens=1),
+        # provider deliberately defaulted to None
+    )
+    p = _make_provider_with_response(fake)
+    result = p.complete(
+        system="s", tools=[],
+        messages=[{"role": "user", "content": "go"}],
+        model="x", max_tokens=10,
+    )
+    assert result.served_by is None

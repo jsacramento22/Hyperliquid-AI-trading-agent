@@ -267,6 +267,13 @@ def run_cycle(
             max_tokens=MAX_OUTPUT_TOKENS,
         )
 
+        # OpenRouter (and any other aggregator) tells us which backing
+        # provider it routed to. Log so a Novita→Together fallback or
+        # quantization-tier surprise is visible in journalctl without
+        # needing to cross-reference the OpenRouter dashboard.
+        if resp.served_by:
+            log.info("served by: %s", resp.served_by)
+
         u = resp.usage
         usage_total["input_tokens"] += u.input_tokens or 0
         usage_total["output_tokens"] += u.output_tokens or 0
