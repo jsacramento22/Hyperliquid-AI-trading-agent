@@ -50,6 +50,11 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 echo "=== Rsync → ${DROPLET_USER}@${DROPLET_HOST}:${DROPLET_PATH} ==="
+# Capture rsync output so we can detect when pyproject.toml changed and
+# auto-install deps. The `| tee` preserves live streaming to the terminal.
+# pipefail (set -o) propagates rsync's exit code through the pipe.
+RSYNC_LOG=$(mktemp)
+trap 'rm -f "$RSYNC_LOG"' EXIT
 rsync $RSYNC_FLAGS \
     --exclude='.venv' \
     --exclude='web/node_modules' \
@@ -60,12 +65,35 @@ rsync $RSYNC_FLAGS \
     --exclude='.git' \
     --exclude='data' \
     --exclude='*.db.bak' \
-    . "${DROPLET_USER}@${DROPLET_HOST}:${DROPLET_PATH}"
+    . "${DROPLET_USER}@${DROPLET_HOST}:${DROPLET_PATH}" | tee "$RSYNC_LOG"
+
+# Did this transfer touch pyproject.toml? If yes, deps may have changed and
+# the venv on the droplet won't have them — rsync doesn't run pip.
+PYPROJECT_CHANGED=false
+if grep -q '^pyproject\.toml$' "$RSYNC_LOG"; then
+    PYPROJECT_CHANGED=true
+fi
 
 if [[ "$RSYNC_FLAGS" == *n* ]]; then
     echo
     echo "=== Dry-run complete (no files transferred, no restart) ==="
+    if [[ "$PYPROJECT_CHANGED" == "true" ]]; then
+        echo "(Note: pyproject.toml would have changed — a real run would now"
+        echo " install deps via: .venv/bin/pip install -e '.[dev]')"
+    fi
     exit 0
+fi
+
+# Auto-install deps when pyproject.toml moved. Runs BEFORE the restart so
+# the service comes back up against the new dep set rather than crashing
+# on ModuleNotFoundError. Also runs when --no-restart is set, since the
+# user will restart later and the deps need to be in place.
+if [[ "$PYPROJECT_CHANGED" == "true" ]]; then
+    echo
+    echo "=== pyproject.toml changed — installing deps on droplet ==="
+    ssh "${DROPLET_USER}@${DROPLET_HOST}" \
+        "cd ~/hyperliquid && .venv/bin/pip install -e '.[dev]' --quiet"
+    echo "✓ Deps installed."
 fi
 
 if [[ "$RESTART" == "false" ]]; then
