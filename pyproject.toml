@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "hyperliquid-python-sdk>=0.10.0",
     "anthropic>=0.40.0",
+    "openai>=1.50.0",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "PyYAML>=6.0",

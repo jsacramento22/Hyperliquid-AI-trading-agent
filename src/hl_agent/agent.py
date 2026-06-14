@@ -4,11 +4,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from anthropic import Anthropic
-
 from .account import AccountState
 from .context import render_context
 from .executor import ActionResult, Executor
+from .llm_provider import LLMProvider
 from .market_data import MarketSnapshot
 from .tools import TOOL_DEFINITIONS
 
@@ -29,54 +28,11 @@ MAX_OUTPUT_TOKENS = 1500
 # after any edit.
 
 
-def _system_blocks(system: str) -> list[dict[str, Any]]:
-    """System prompt as a single cacheable block, 1h TTL — survives across
-    cycles (15-min cadence)."""
-    return [
-        {
-            "type": "text",
-            "text": system,
-            "cache_control": {"type": "ephemeral", "ttl": "1h"},
-        }
-    ]
-
-
-def _tools_with_cache() -> list[dict[str, Any]]:
-    """Mark the last tool definition with cache_control so the entire tools
-    array caches as one unit with 1h TTL."""
-    tools = [dict(t) for t in TOOL_DEFINITIONS]
-    tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}}
-    return tools
-
-
-def _user_message(user_text: str) -> dict[str, Any]:
-    """First user message — marked with cache_control (default 5m TTL).
-
-    Empirical finding (2026-05-19): removing this breakpoint to "unlock" 1h
-    cache on system+tools turned out to COST more, not less. With the
-    breakpoint removed:
-      - 1h cache savings on system+tools: only ~$0.10/day (1h writes are
-        rare since TTL extends on access; cache_read tier price is the same
-        regardless of source TTL)
-      - User message sent fresh every cycle: +96 × ~2,000 × $3/M = +$0.58/day
-      - Cache-read ratio dropped 93% → 50% on the Anthropic console
-      - Net cost increase: ~$0.40-0.50/day
-
-    Restoring the 5m breakpoint here re-collapses the chain to 5m tier, but
-    that's strictly cheaper because the user_msg is now cached across the
-    multi-turn calls within each cycle (call 1 writes, call 2 reads) and
-    Anthropic continuously refreshes the 5m entry on access.
-    """
-    return {
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": user_text,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-    }
+# Note: cache_control wrapping (system block, last tool, first user message)
+# moved into llm_provider.AnthropicProvider as of the provider-abstraction
+# refactor. agent.py now passes plain strings/lists; the Anthropic-specific
+# caching shape is the provider's responsibility. OpenAI-compatible
+# providers (OpenRouter, etc.) ignore caching entirely.
 
 
 SYSTEM_PROMPT = """\
@@ -267,7 +223,7 @@ class CycleResult:
 
 def run_cycle(
     *,
-    anthropic: Anthropic,
+    provider: LLMProvider,
     model: str,
     network: str,
     allowed_assets: list[str],
@@ -276,11 +232,19 @@ def run_cycle(
     starting_equity_usd: float,
     executor: Executor,
 ) -> CycleResult:
+    """Run one LLM-driven trading cycle through the given provider.
+
+    The provider abstracts which API we're hitting (Anthropic native vs
+    OpenAI-compatible like OpenRouter). The agent passes plain strings
+    and Anthropic-shape message blocks; the provider handles wire
+    translation + provider-specific caching internally."""
     system = SYSTEM_PROMPT.format(
         assets=", ".join(allowed_assets), network=network
     )
     user_text = render_context(snapshot, account)
-    messages: list[dict[str, Any]] = [_user_message(user_text)]
+    # First user message as plain string. AnthropicProvider wraps in a
+    # cache_control block internally; OpenAI-compatible providers send as-is.
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
 
     raw_tool_calls: list[dict] = []
     actions: list[ActionResult] = []
@@ -295,16 +259,12 @@ def run_cycle(
     }
 
     for _ in range(MAX_TURNS):
-        # Use the beta-namespaced endpoint so the `betas` array reaches the
-        # API correctly. The `extras_headers` route silently downgrades the
-        # 1h cache TTL to 5m on this SDK version.
-        resp = anthropic.beta.messages.create(
+        resp = provider.complete(
+            system=system,
+            tools=list(TOOL_DEFINITIONS),
+            messages=messages,
             model=model,
             max_tokens=MAX_OUTPUT_TOKENS,
-            system=_system_blocks(system),
-            tools=_tools_with_cache(),
-            messages=messages,
-            betas=["extended-cache-ttl-2025-04-11"],
         )
 
         u = resp.usage

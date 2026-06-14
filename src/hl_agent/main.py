@@ -7,7 +7,6 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
-from anthropic import Anthropic
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from . import account as account_mod
@@ -17,6 +16,7 @@ from . import runtime
 from .agent import run_cycle
 from .executor import Executor
 from .hl_client import build_client, initialize_position_leverage
+from .llm_provider import build_provider
 from .settings import Settings, load_settings
 from .storage import Storage
 
@@ -56,6 +56,7 @@ def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
     starting_equity = storage.starting_equity_today() or account.equity_usd
     risk_config = runtime.effective_risk(settings, storage)
     model = runtime.effective_model(settings, storage)
+    provider_name = runtime.effective_provider(settings, storage)
 
     executor = Executor(
         client=client,
@@ -66,9 +67,13 @@ def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
         dry_run=dry_run,
     )
 
-    anthropic = Anthropic(api_key=settings.secrets.anthropic_api_key)
+    provider = build_provider(
+        provider=provider_name,
+        anthropic_api_key=settings.secrets.anthropic_api_key,
+        openrouter_api_key=settings.secrets.openrouter_api_key,
+    )
     result = run_cycle(
-        anthropic=anthropic,
+        provider=provider,
         model=model,
         network=settings.config.network,
         allowed_assets=settings.config.assets,
@@ -232,10 +237,11 @@ def main() -> None:
 
     storage = Storage(settings.storage_path)
     log.info(
-        "starting scheduler: every %d min on %s, model=%s, assets=%s",
+        "starting scheduler: every %d min on %s, model=%s via %s, assets=%s",
         settings.config.cadence_minutes,
         settings.config.network,
         runtime.effective_model(settings, storage),
+        runtime.effective_provider(settings, storage),
         settings.config.assets,
     )
     sched.start()

@@ -153,10 +153,11 @@ def create_app(
                 )
             scheduler.start()
             log.info(
-                "server scheduler started: every %d min on %s, model=%s, assets=%s",
+                "server scheduler started: every %d min on %s, model=%s via %s, assets=%s",
                 settings.config.cadence_minutes,
                 settings.config.network,
-                settings.config.model,
+                runtime.effective_model(settings, storage),
+                runtime.effective_provider(settings, storage),
                 settings.config.assets,
             )
             if interval > 0:
@@ -202,6 +203,7 @@ def create_app(
             "ok": True,
             "network": settings.config.network,
             "model": runtime.effective_model(settings, storage),
+            "provider": runtime.effective_provider(settings, storage),
             "assets": settings.config.assets,
             "cadence_minutes": settings.config.cadence_minutes,
             **version_mod.status(),
@@ -363,7 +365,9 @@ def create_app(
                 "effective": runtime.effective_model(settings, storage),
                 "base": settings.config.model,
                 "override": runtime.get_model_override(storage),
-                "supported": list(runtime.SUPPORTED_MODELS),
+                "provider": runtime.effective_provider(settings, storage),
+                "base_provider": settings.config.model_provider,
+                "supported": runtime.SUPPORTED_MODELS,  # {model: provider} map
             },
             "take_profit": {
                 "effective": {
@@ -397,16 +401,20 @@ def create_app(
     @app.post("/api/model")
     def post_model(body: ModelBody):
         """Live-switch which LLM the next cycle uses. Takes effect on the
-        next scheduled cycle (no restart needed). Switching invalidates the
-        Anthropic prompt cache for one cycle since cache keys include the
-        model name — expect a temporary cost bump on the cycle after a
-        change."""
+        next scheduled cycle (no restart needed). The provider is derived
+        from the model lookup in SUPPORTED_MODELS — selecting a DeepSeek
+        model automatically routes via OpenRouter, etc.
+
+        Switching invalidates any prompt cache for one cycle (cache keys
+        include the model name) — expect a small one-time cost bump on
+        the cycle after a change."""
         try:
             runtime.set_model_override(storage, body.model)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {
             "model": runtime.effective_model(settings, storage),
+            "provider": runtime.effective_provider(settings, storage),
             "override": runtime.get_model_override(storage),
             "base": settings.config.model,
         }

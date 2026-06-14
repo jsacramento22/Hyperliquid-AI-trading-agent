@@ -2,6 +2,7 @@ export type Health = {
   ok: boolean;
   network: "testnet" | "mainnet";
   model: string;
+  provider: "anthropic" | "openrouter";
   assets: string[];
   cadence_minutes: number;
   version: string;
@@ -191,11 +192,18 @@ export type MarginCrossState = {
   override: boolean | null;
 };
 
+// Provider keys mirror the backend's settings.AppConfig.model_provider
+// Literal. New providers must be added here AND in runtime.SUPPORTED_MODELS
+// before they're selectable in the UI.
+export type Provider = "anthropic" | "openrouter";
+
 export type ModelState = {
-  effective: string;       // model in use right now
-  base: string;            // model from config.yaml
-  override: string | null; // runtime-set override, if any
-  supported: string[];     // allowlist the UI may pick from
+  effective: string;             // model in use right now
+  base: string;                  // model from config.yaml
+  override: string | null;       // runtime-set override, if any
+  provider: Provider;            // provider for the effective model
+  base_provider: Provider;       // provider from config.yaml
+  supported: Record<string, Provider>;  // {model: provider} map; UI dropdown
 };
 
 // Take-profit / stop-loss monitor state. Each side has independently
@@ -245,6 +253,7 @@ export type LeverageApplyResponse = {
 
 export type ModelApplyResponse = {
   model: string;
+  provider: Provider;
   override: string | null;
   base: string;
 };

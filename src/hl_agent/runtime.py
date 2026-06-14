@@ -11,6 +11,7 @@ KEY_RISK_OVERRIDES = "risk_overrides"
 KEY_POSITION_LEVERAGE = "position_leverage"
 KEY_POSITION_MARGIN_CROSS = "position_margin_cross"
 KEY_MODEL = "model"
+KEY_MODEL_PROVIDER = "model_provider"
 KEY_TP_OVERRIDES = "take_profit_overrides"
 KEY_SL_OVERRIDES = "stop_loss_overrides"
 
@@ -19,14 +20,23 @@ KEY_SL_OVERRIDES = "stop_loss_overrides"
 # stay YAML-only — they affect scheduler timing and need a restart anyway.
 _MONITOR_FIELDS = {"enabled", "pct"}
 
-# Allowlist for the live model switch. Must match keys in cost.PRICING so
-# cost calculations stay correct. Adding a new model here AND a pricing
-# entry in cost.py is all that's needed to make it selectable.
-SUPPORTED_MODELS = (
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-    "claude-opus-4-7",
-)
+# Model allowlist for the live UI switch. Each entry pairs a model
+# identifier with its required provider, so the UI can't ask for a
+# DeepSeek model on Anthropic's API. The model string here MUST match a
+# key in cost.PRICING for cost calc to work; the provider string MUST
+# match Settings.AppConfig.model_provider's Literal options.
+SUPPORTED_MODELS: dict[str, str] = {
+    "claude-sonnet-4-6": "anthropic",
+    "claude-haiku-4-5-20251001": "anthropic",
+    "claude-opus-4-7": "anthropic",
+    "deepseek/deepseek-chat-v3.1": "openrouter",
+}
+
+
+def provider_for_model(model: str) -> str | None:
+    """Lookup the required provider for a supported model. None if not in
+    the allowlist (caller should reject)."""
+    return SUPPORTED_MODELS.get(model)
 
 _RISK_FIELDS = {
     "max_leverage",
@@ -103,16 +113,30 @@ def get_model_override(storage: Storage) -> str | None:
     return val if val in SUPPORTED_MODELS else None
 
 
+def get_provider_override(storage: Storage) -> str | None:
+    val = storage.get_runtime_value(KEY_MODEL_PROVIDER)
+    if not isinstance(val, str):
+        return None
+    return val if val in {"anthropic", "openrouter"} else None
+
+
 def set_model_override(storage: Storage, model: str) -> None:
+    """Set both the model override AND its required provider in one shot.
+    Storing provider alongside the model means the runtime stays
+    consistent — you can never have model='deepseek/...' with
+    provider='anthropic', which would 404 the API call."""
     if model not in SUPPORTED_MODELS:
         raise ValueError(
             f"unsupported model {model!r}; choose one of {list(SUPPORTED_MODELS)}"
         )
+    provider = SUPPORTED_MODELS[model]
     storage.set_runtime_value(KEY_MODEL, model)
+    storage.set_runtime_value(KEY_MODEL_PROVIDER, provider)
 
 
 def clear_model_override(storage: Storage) -> None:
     storage.set_runtime_value(KEY_MODEL, None)
+    storage.set_runtime_value(KEY_MODEL_PROVIDER, None)
 
 
 def effective_model(settings: Settings, storage: Storage) -> str:
@@ -122,6 +146,22 @@ def effective_model(settings: Settings, storage: Storage) -> str:
     one-cycle cost bump after each change."""
     override = get_model_override(storage)
     return override if override else settings.config.model
+
+
+def effective_provider(settings: Settings, storage: Storage) -> str:
+    """Provider that should be used to reach the effective_model. Override
+    takes precedence; if no override is set but a model override is, we
+    derive the provider from SUPPORTED_MODELS. Falls back to the YAML
+    config's model_provider only when nothing is overridden."""
+    p_override = get_provider_override(storage)
+    if p_override:
+        return p_override
+    m_override = get_model_override(storage)
+    if m_override:
+        # Belt-and-braces: model override exists without paired provider
+        # override (shouldn't happen post-fix, but old DBs might).
+        return SUPPORTED_MODELS.get(m_override, settings.config.model_provider)
+    return settings.config.model_provider
 
 
 # --- TP/SL runtime controls -----------------------------------------------

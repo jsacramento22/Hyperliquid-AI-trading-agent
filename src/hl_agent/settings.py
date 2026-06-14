@@ -51,6 +51,10 @@ class AppConfig(BaseModel):
     # Model selected at process start; live-overridable via /api/model so a
     # UI switch doesn't require a restart.
     model: str = "claude-haiku-4-5-20251001"
+    # Which API to call to reach `model`. Anthropic uses native API +
+    # prompt caching; openrouter uses the OpenAI-compatible endpoint at
+    # https://openrouter.ai/api/v1 and supports DeepSeek V3 etc.
+    model_provider: Literal["anthropic", "openrouter"] = "anthropic"
     assets: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
     cadence_minutes: int = 15
     position_leverage: int = 2     # per-position leverage applied on the exchange
@@ -77,6 +81,7 @@ class Secrets(BaseSettings):
     hl_agent_private_key: str = ""
     hl_account_address: str = ""
     anthropic_api_key: str = ""
+    openrouter_api_key: str = ""
 
 
 class Settings(BaseModel):

@@ -26,6 +26,17 @@ PRICING: dict[str, dict[str, float]] = {
         "cache_write_1h": 30.00,
         "output": 75.00,
     },
+    # Non-Anthropic models. cache_* fields are kept at $0 because most
+    # OpenAI-compatible providers either don't expose prompt caching or
+    # apply it transparently with no separate price tier. If a provider's
+    # caching becomes meaningful later, split out the entry per-provider.
+    "deepseek/deepseek-chat-v3.1": {
+        "input": 0.20,
+        "cache_read": 0.0,
+        "cache_write_5m": 0.0,
+        "cache_write_1h": 0.0,
+        "output": 0.80,
+    },
 }
 
 

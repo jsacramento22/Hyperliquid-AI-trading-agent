@@ -11,12 +11,19 @@ const LABELS: Record<string, string> = {
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
   "claude-opus-4-7": "Opus 4.7",
+  "deepseek/deepseek-chat-v3.1": "DeepSeek V3.1",
 };
 
 const COST_PER_DAY_HINT: Record<string, string> = {
   "claude-sonnet-4-6": "~$2.70/day",
   "claude-haiku-4-5-20251001": "~$0.77/day",
   "claude-opus-4-7": "~$13.50/day",
+  "deepseek/deepseek-chat-v3.1": "~$0.12/day",
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  openrouter: "OpenRouter",
 };
 
 export function ModelSwitchForm() {
@@ -74,9 +81,10 @@ export function ModelSwitchForm() {
       }
     >
       <p className="text-xs text-[var(--muted)] mb-4 max-w-xl">
-        Which Claude model drives each cycle. Changes apply on the next
-        scheduled cycle — no restart needed. Switching invalidates the
-        prompt cache for one cycle (small one-time cost bump).
+        Which model drives each cycle. Each model is tied to a specific
+        provider (Anthropic for Claude, OpenRouter for DeepSeek), so
+        switching the model automatically switches the API endpoint.
+        Changes apply on the next scheduled cycle — no restart needed.
       </p>
 
       <form
@@ -89,18 +97,23 @@ export function ModelSwitchForm() {
       >
         <div className="grid grid-cols-[200px_1fr] gap-3 items-center">
           <label className="text-sm">Active model</label>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <select
               value={pending ?? m.effective}
               onChange={(e) => setPending(e.target.value)}
               className="bg-[var(--background)] border border-[var(--panel-border)] rounded px-2 py-1 text-sm font-mono focus:border-[var(--accent)] outline-none min-w-[220px]"
             >
-              {m.supported.map((opt) => (
+              {Object.entries(m.supported).map(([opt, prov]) => (
                 <option key={opt} value={opt}>
-                  {LABELS[opt] ?? opt}
+                  {LABELS[opt] ?? opt} · {PROVIDER_LABELS[prov] ?? prov}
                 </option>
               ))}
             </select>
+            {pending && m.supported[pending] && (
+              <span className="text-xs px-2 py-0.5 rounded border border-[var(--panel-border)] text-[var(--muted)] font-mono">
+                via {PROVIDER_LABELS[m.supported[pending]] ?? m.supported[pending]}
+              </span>
+            )}
             {pending && COST_PER_DAY_HINT[pending] && (
               <span className="text-xs text-[var(--muted)]">
                 {COST_PER_DAY_HINT[pending]}
@@ -141,11 +154,17 @@ export function ModelSwitchForm() {
       <div className="mt-4 text-xs font-mono text-[var(--muted)] space-y-1">
         <div>
           effective:{" "}
-          <span className="text-[var(--foreground)]">{m.effective}</span>
+          <span className="text-[var(--foreground)]">{m.effective}</span>{" "}
+          <span className="text-[var(--muted)]">
+            via {PROVIDER_LABELS[m.provider] ?? m.provider}
+          </span>
         </div>
         <div>
           base (config.yaml):{" "}
-          <span className="text-[var(--foreground)]">{m.base}</span>
+          <span className="text-[var(--foreground)]">{m.base}</span>{" "}
+          <span className="text-[var(--muted)]">
+            via {PROVIDER_LABELS[m.base_provider] ?? m.base_provider}
+          </span>
         </div>
         <div>
           override:{" "}
