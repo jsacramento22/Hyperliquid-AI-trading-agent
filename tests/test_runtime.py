@@ -95,3 +95,20 @@ def test_effective_risk_clear_overrides(storage, settings):
     runtime.clear_risk_overrides(storage)
     eff = runtime.effective_risk(settings, storage)
     assert eff.max_leverage == 2.0
+
+
+def test_deepseek_v3_2_is_supported(storage):
+    """The V3.2 entry must be in SUPPORTED_MODELS and routed via
+    openrouter — otherwise the UI dropdown can't expose it and the
+    set_model_override path would reject it."""
+    assert "deepseek/deepseek-v3.2" in runtime.SUPPORTED_MODELS
+    assert runtime.SUPPORTED_MODELS["deepseek/deepseek-v3.2"] == "openrouter"
+
+
+def test_set_model_override_atomically_pairs_v3_2_with_openrouter(storage):
+    """Selecting V3.2 must atomically set both the model AND the
+    provider — the runtime must never expose model='deepseek/...' with
+    provider='anthropic', which would 404 the API call."""
+    runtime.set_model_override(storage, "deepseek/deepseek-v3.2")
+    assert runtime.get_model_override(storage) == "deepseek/deepseek-v3.2"
+    assert runtime.get_provider_override(storage) == "openrouter"

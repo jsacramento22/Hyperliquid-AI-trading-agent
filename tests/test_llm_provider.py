@@ -434,8 +434,18 @@ def test_factory_openrouter_pins_novita_fp8() -> None:
             "order": ["novita"],
             "allow_fallbacks": True,
             "quantizations": ["fp8"],
-        }
+        },
+        "reasoning": {"enabled": False},
     }
+
+
+def test_factory_openrouter_forces_reasoning_off() -> None:
+    """Critical for DeepSeek V3.2 which defaults reasoning ON. Leaving
+    reasoning on with structured tool output is documented broken
+    (vllm #41132, vercel/ai #10778). V3.1 ignores the flag, V3.2 needs
+    it forced off — sending always-off is the safe default."""
+    p = build_provider(provider="openrouter", openrouter_api_key="sk-or-fake")
+    assert p._extra_body["reasoning"] == {"enabled": False}
 
 
 def test_openai_provider_forwards_extra_body() -> None:

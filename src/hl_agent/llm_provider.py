@@ -422,12 +422,21 @@ def build_provider(
             # explicitly excludes DeepInfra's FP4 "Turbo" variant —
             # we want consistent precision, not lowest-cost-at-the-
             # expense-of-quality. Cost delta vs unpinned: ~$0.04/day.
+            #
+            # `reasoning.enabled: false` forces non-thinking mode on
+            # every DeepSeek hybrid model. V3.1's chat alias defaults
+            # this OFF and ignores the flag; V3.2 defaults it ON and
+            # NEEDS it forced off — leaving reasoning on with
+            # structured tool output is documented-broken (vllm #41132,
+            # vercel/ai #10778, DeepSeek's own docs). Setting it
+            # always-off is the safe minimal-surprise default.
             extra_body={
                 "provider": {
                     "order": ["novita"],
                     "allow_fallbacks": True,
                     "quantizations": ["fp8"],
-                }
+                },
+                "reasoning": {"enabled": False},
             },
         )
     raise ValueError(

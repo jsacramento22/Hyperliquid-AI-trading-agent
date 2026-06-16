@@ -12,6 +12,7 @@ const LABELS: Record<string, string> = {
   "claude-haiku-4-5-20251001": "Haiku 4.5",
   "claude-opus-4-7": "Opus 4.7",
   "deepseek/deepseek-chat-v3.1": "DeepSeek V3.1",
+  "deepseek/deepseek-v3.2": "DeepSeek V3.2 ⭐",
 };
 
 const COST_PER_DAY_HINT: Record<string, string> = {
@@ -19,6 +20,7 @@ const COST_PER_DAY_HINT: Record<string, string> = {
   "claude-haiku-4-5-20251001": "~$0.77/day",
   "claude-opus-4-7": "~$13.50/day",
   "deepseek/deepseek-chat-v3.1": "~$0.12/day",
+  "deepseek/deepseek-v3.2": "~$0.08/day",
 };
 
 const PROVIDER_LABELS: Record<string, string> = {

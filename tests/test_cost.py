@@ -72,3 +72,28 @@ def test_zero_safe():
     row = {"model": "claude-sonnet-4-6"}
     c = cost_for_row(row)
     assert c.total_usd == 0.0
+
+
+def test_deepseek_v3_2_pricing_present():
+    """V3.2 GA pricing must be in the table; runtime allowlist references
+    it so cost calc would fall back to Sonnet (wrong) if missing."""
+    assert "deepseek/deepseek-v3.2" in PRICING
+    # The Alpha Arena winner is cheaper on output than V3.1 — confirm.
+    assert PRICING["deepseek/deepseek-v3.2"]["output"] < PRICING["deepseek/deepseek-chat-v3.1"]["output"]
+
+
+def test_deepseek_v3_2_typical_cycle_cost():
+    """At our typical workload (~4,100 input + ~500 output per cycle),
+    confirm V3.2's projected per-cycle cost is in the band we promised
+    the user (~$0.001-$0.002 / cycle)."""
+    row = {
+        "model": "deepseek/deepseek-v3.2",
+        "input_tokens": 4_100,
+        "cache_read_tokens": 0,
+        "cache_write_5m_tokens": 0,
+        "cache_write_1h_tokens": 0,
+        "output_tokens": 500,
+    }
+    c = cost_for_row(row)
+    # 4100 * 0.23/M + 500 * 0.34/M = 0.000943 + 0.000170 = $0.00111
+    assert 0.0008 < c.total_usd < 0.0015

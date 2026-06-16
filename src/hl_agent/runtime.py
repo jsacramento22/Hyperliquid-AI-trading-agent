@@ -30,6 +30,10 @@ SUPPORTED_MODELS: dict[str, str] = {
     "claude-haiku-4-5-20251001": "anthropic",
     "claude-opus-4-7": "anthropic",
     "deepseek/deepseek-chat-v3.1": "openrouter",
+    # V3.2 GA: Alpha Arena S1.5 winner vs V3.1 on Hyperliquid. Cheaper
+    # output, agentic tool-use trained in. V3.1 stays in the list as a
+    # one-click rollback if V3.2 misbehaves.
+    "deepseek/deepseek-v3.2": "openrouter",
 }
 
 

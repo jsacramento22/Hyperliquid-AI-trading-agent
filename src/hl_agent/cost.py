@@ -37,6 +37,18 @@ PRICING: dict[str, dict[str, float]] = {
         "cache_write_1h": 0.0,
         "output": 0.80,
     },
+    # V3.2 GA (released 2025-12-01): cheaper output ($0.34/M vs $0.80/M for
+    # V3.1), agentic tool-use trained in, won Nof1 Alpha Arena S1.5 vs V3.1
+    # on Hyperliquid perps. Must be paired with reasoning.enabled=false in
+    # the request body — V3.2 defaults reasoning ON, which breaks structured
+    # tool output (vllm #41132, vercel/ai #10778).
+    "deepseek/deepseek-v3.2": {
+        "input": 0.23,
+        "cache_read": 0.0,
+        "cache_write_5m": 0.0,
+        "cache_write_1h": 0.0,
+        "output": 0.34,
+    },
 }
 
 
