@@ -6,6 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from apscheduler.executors.pool import ThreadPoolExecutor as APSThreadPoolExecutor
@@ -20,6 +21,7 @@ from . import monitor
 from . import runtime
 from . import version as version_mod
 from .hl_client import build_client, initialize_position_leverage
+from .tree_model import try_build_predictor
 from .main import (
     _initialize_exchange,
     _safe_cycle,
@@ -120,6 +122,12 @@ def create_app(
         executors={"default": APSThreadPoolExecutor(max_workers=1)},
     )
 
+    # Built once at process start so per-asset rolling state (funding /
+    # OI history) accumulates across cycles. Captured by the cycle
+    # lambda below — server.py is the prod entry point (main.py's
+    # main() is dev/manual only), so wiring lives here.
+    tree_predictor = try_build_predictor(model_dir=Path("data/models"))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if start_scheduler:
@@ -127,7 +135,7 @@ def create_app(
             next_run = compute_next_run_time(settings)
             delay = (next_run - datetime.now(tz=timezone.utc)).total_seconds()
             scheduler.add_job(
-                lambda: _safe_cycle(settings),
+                lambda: _safe_cycle(settings, tree_predictor=tree_predictor),
                 "interval",
                 minutes=settings.config.cadence_minutes,
                 next_run_time=next_run,
