@@ -63,7 +63,9 @@ rsync $RSYNC_FLAGS \
     --exclude='*.pyc' \
     --exclude='.pytest_cache' \
     --exclude='.git' \
-    --exclude='data' \
+    --exclude='data/historical' \
+    --exclude='data/*.db' \
+    --exclude='data/logs' \
     --exclude='*.db.bak' \
     . "${DROPLET_USER}@${DROPLET_HOST}:${DROPLET_PATH}" | tee "$RSYNC_LOG"
 

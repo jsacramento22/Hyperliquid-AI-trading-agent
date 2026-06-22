@@ -14,6 +14,13 @@ dependencies = [
     "APScheduler>=3.10",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # LightGBM second-opinion model (Phase 1+). Runs CPU-only — no GPU
+    # needed. pandas + pyarrow are needed for the historical-candle
+    # parquet pipeline; scikit-learn for walk-forward CV utilities.
+    "lightgbm>=4.0",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+    "pyarrow>=15.0",
 ]
 
 [project.optional-dependencies]

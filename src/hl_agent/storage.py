@@ -72,7 +72,53 @@ CREATE TABLE IF NOT EXISTS cycle_errors (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cycle_errors_ts ON cycle_errors(ts_utc);
+
+-- Mode A advisor signal from the LightGBM tree. Logged BEFORE the LLM
+-- runs so we have a record even if the cycle errors out later. The mid
+-- price is captured so Phase 3 outcome backfill can score the prediction
+-- against actual realised direction at horizon_bars × 15min ahead.
+CREATE TABLE IF NOT EXISTS tree_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_utc TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    prob_up REAL NOT NULL,
+    predicted_direction TEXT NOT NULL,    -- "up" | "down"
+    confidence TEXT NOT NULL,             -- "low" | "medium" | "high"
+    model_version TEXT NOT NULL,
+    horizon_bars INTEGER NOT NULL,
+    mid_price REAL NOT NULL,
+    -- Phase 3 outcome columns: NULL until the prediction's horizon has
+    -- elapsed and tree_outcomes.backfill scores it against the realised
+    -- close price. `correct` is stored as 0/1 (SQLite INTEGER) so it
+    -- aggregates cleanly via SUM in summary queries.
+    realized_close REAL,
+    realized_direction TEXT,              -- "up" | "down"
+    correct INTEGER                        -- 0 | 1 | NULL (unscored)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tree_predictions_ts ON tree_predictions(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_tree_predictions_cycle ON tree_predictions(cycle_id);
 """
+
+
+def _migrate_tree_predictions(conn: sqlite3.Connection) -> None:
+    """Add Phase 3 outcome columns to tree_predictions on DBs that were
+    initialised at the Phase 2 schema (no realized_* columns). SQLite
+    can't add a column inside an `IF NOT EXISTS` so we inspect the
+    existing column list and ALTER on demand. Idempotent."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tree_predictions)").fetchall()}
+    if not cols:
+        # Table doesn't exist yet — the CREATE in SCHEMA will run first
+        # and includes all columns, no migration needed.
+        return
+    for col, ddl in (
+        ("realized_close", "ALTER TABLE tree_predictions ADD COLUMN realized_close REAL"),
+        ("realized_direction", "ALTER TABLE tree_predictions ADD COLUMN realized_direction TEXT"),
+        ("correct", "ALTER TABLE tree_predictions ADD COLUMN correct INTEGER"),
+    ):
+        if col not in cols:
+            conn.execute(ddl)
 
 # Note: shadow_decisions / shadow_token_usage tables may exist in older
 # DBs from the A/B experiment. They are no longer written to and can be
@@ -99,6 +145,7 @@ class Storage:
         self.path = path
         with self._conn() as c:
             c.executescript(SCHEMA)
+            _migrate_tree_predictions(c)
 
     @contextmanager
     def _conn(self):
@@ -305,6 +352,142 @@ class Storage:
                 "SELECT ts_utc, cycle_id, equity_usd, free_margin_usd, "
                 "total_notional_usd, margin_used_usd "
                 "FROM equity_snapshots WHERE ts_utc >= ? ORDER BY id ASC",
+                (cutoff_iso,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def log_tree_prediction(
+        self,
+        *,
+        cycle_id: str,
+        asset: str,
+        prob_up: float,
+        predicted_direction: str,
+        confidence: str,
+        model_version: str,
+        horizon_bars: int,
+        mid_price: float,
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO tree_predictions "
+                "(ts_utc, cycle_id, asset, prob_up, predicted_direction, "
+                "confidence, model_version, horizon_bars, mid_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    _utc_now(),
+                    cycle_id,
+                    asset,
+                    float(prob_up),
+                    predicted_direction,
+                    confidence,
+                    model_version,
+                    int(horizon_bars),
+                    float(mid_price),
+                ),
+            )
+
+    def recent_tree_predictions(self, limit: int = 50) -> list[dict]:
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM tree_predictions ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def tree_predictions_needing_backfill(
+        self, *, max_age_hours: int = 24
+    ) -> list[dict]:
+        """Predictions older than their horizon but lacking realized_close.
+
+        `max_age_hours` bounds the search — once a prediction is older than
+        this and still unscored, we treat it as permanently unscoreable
+        (its target close falls outside any snapshot we'd reasonably have)
+        and stop trying. Default 24h: at 15-min cadence we should always
+        score within a few minutes of the horizon, so missing scores past
+        24h are stuck and clog the query for no benefit.
+        """
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max_age_hours)
+        cutoff_iso = cutoff.isoformat()
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM tree_predictions "
+                "WHERE realized_close IS NULL AND ts_utc >= ? "
+                "ORDER BY ts_utc ASC",
+                (cutoff_iso,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_tree_outcome(
+        self,
+        *,
+        prediction_id: int,
+        realized_close: float,
+        realized_direction: str,
+        correct: bool,
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE tree_predictions SET realized_close = ?, "
+                "realized_direction = ?, correct = ? WHERE id = ?",
+                (
+                    float(realized_close),
+                    realized_direction,
+                    1 if correct else 0,
+                    int(prediction_id),
+                ),
+            )
+
+    def tree_accuracy_summary(
+        self, *, hours: int, asset: str | None = None
+    ) -> dict:
+        """Roll up scored predictions over the last `hours` window. Returns
+        zeros (not NaN) when no scored rows exist so the dashboard always
+        has numeric values to render."""
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+        sql = (
+            "SELECT COUNT(*) AS n, SUM(correct) AS hits FROM tree_predictions "
+            "WHERE realized_close IS NOT NULL AND ts_utc >= ?"
+        )
+        params: list = [cutoff_iso]
+        if asset is not None:
+            sql += " AND asset = ?"
+            params.append(asset)
+        with self._conn() as c:
+            row = c.execute(sql, tuple(params)).fetchone()
+        n = int(row[0] or 0)
+        hits = int(row[1] or 0)
+        return {
+            "scored_count": n,
+            "correct_count": hits,
+            "accuracy": (hits / n) if n > 0 else 0.0,
+        }
+
+    def latest_tree_prediction_per_asset(self) -> dict[str, dict]:
+        """Most recent row per asset, scored or not — used by the dashboard
+        to surface 'what's the model saying right now'."""
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            # SQLite GROUP BY semantics: when there's no aggregate, the
+            # value of the non-grouped column is implementation-defined.
+            # Use the MAX(id) → row-fetch pattern instead.
+            rows = c.execute(
+                "SELECT * FROM tree_predictions WHERE id IN "
+                "(SELECT MAX(id) FROM tree_predictions GROUP BY asset)"
+            ).fetchall()
+        return {r["asset"]: dict(r) for r in rows}
+
+    def tree_predictions_since(self, hours: int) -> list[dict]:
+        cutoff = datetime.now(tz=timezone.utc).timestamp() - hours * 3600
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM tree_predictions WHERE ts_utc >= ? "
+                "ORDER BY id ASC",
                 (cutoff_iso,),
             ).fetchall()
         return [dict(r) for r in rows]

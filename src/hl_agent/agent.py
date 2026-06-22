@@ -9,7 +9,9 @@ from .context import render_context
 from .executor import ActionResult, Executor
 from .llm_provider import LLMProvider
 from .market_data import MarketSnapshot
+from .storage import Storage
 from .tools import TOOL_DEFINITIONS
+from .tree_model import TreePredictor
 
 log = logging.getLogger("hl_agent.agent")
 
@@ -231,17 +233,61 @@ def run_cycle(
     account: AccountState,
     starting_equity_usd: float,
     executor: Executor,
+    tree_predictor: TreePredictor | None = None,
+    storage: Storage | None = None,
+    cycle_id: str | None = None,
 ) -> CycleResult:
     """Run one LLM-driven trading cycle through the given provider.
 
     The provider abstracts which API we're hitting (Anthropic native vs
     OpenAI-compatible like OpenRouter). The agent passes plain strings
     and Anthropic-shape message blocks; the provider handles wire
-    translation + provider-specific caching internally."""
+    translation + provider-specific caching internally.
+
+    `tree_predictor`, `storage`, and `cycle_id` are jointly optional —
+    when provided, the LightGBM tree advisor (Mode A, informational only)
+    runs before the LLM call, the predictions go into the LLM context as
+    a side signal, and one row per asset is logged so Phase 3 can score
+    accuracy against realised outcomes."""
     system = SYSTEM_PROMPT.format(
         assets=", ".join(allowed_assets), network=network
     )
-    user_text = render_context(snapshot, account)
+
+    tree_predictions = None
+    if tree_predictor is not None:
+        try:
+            tree_predictions = tree_predictor.predict(snapshot)
+        except Exception:
+            # A predictor failure must NEVER break the cycle — Mode A is
+            # informational, so the LLM proceeds without the side signal
+            # and the failure is recorded for later inspection.
+            log.exception("tree_predictor.predict failed — running LLM-only this cycle")
+            tree_predictions = None
+        if tree_predictions and storage is not None and cycle_id is not None:
+            for asset, pred in tree_predictions.items():
+                asnap = snapshot.assets.get(asset)
+                mid = asnap.mid if asnap is not None else 0.0
+                try:
+                    storage.log_tree_prediction(
+                        cycle_id=cycle_id,
+                        asset=pred.asset,
+                        prob_up=pred.prob_up,
+                        predicted_direction=pred.predicted_direction,
+                        confidence=pred.confidence,
+                        model_version=pred.model_version,
+                        horizon_bars=pred.horizon_bars,
+                        mid_price=float(mid),
+                    )
+                except Exception:
+                    log.exception("failed to log tree prediction for %s", asset)
+        if tree_predictions:
+            preview = ", ".join(
+                f"{a}={p.prob_up:.3f}({p.confidence})"
+                for a, p in tree_predictions.items()
+            )
+            log.info("tree predictions: %s", preview)
+
+    user_text = render_context(snapshot, account, tree_predictions)
     # First user message as plain string. AnthropicProvider wraps in a
     # cache_control block internally; OpenAI-compatible providers send as-is.
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]

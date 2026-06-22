@@ -297,6 +297,38 @@ def create_app(
             "series": series,
         }
 
+    @app.get("/api/tree")
+    def tree(hours: int = 168, history_limit: int = 30):
+        """Phase 3: LightGBM tree advisor signal + outcome accuracy.
+
+        Returns the latest prediction per asset, rolling accuracy over
+        the last `hours` (default 7 days), and a list of the most recent
+        `history_limit` predictions for the history table. The frontend
+        renders this as a Mode-A panel — informational only, never used
+        for live trading decisions."""
+        if hours <= 0 or hours > 24 * 90:
+            raise HTTPException(400, "hours must be in (0, 2160]")
+        if history_limit <= 0 or history_limit > 500:
+            raise HTTPException(400, "history_limit must be in (0, 500]")
+
+        latest = storage.latest_tree_prediction_per_asset()
+        rolling = storage.tree_accuracy_summary(hours=hours)
+        # Per-window breakdown lets the panel surface "is the model
+        # drifting?" without the user picking a window manually — short
+        # windows are noisier but flag fresh problems faster.
+        windows = {
+            f"{w}h": storage.tree_accuracy_summary(hours=w)
+            for w in (24, 72, 168)
+        }
+        history = storage.recent_tree_predictions(limit=history_limit)
+        return {
+            "hours": hours,
+            "latest": latest,
+            "rolling": rolling,
+            "windows": windows,
+            "history": history,
+        }
+
     @app.get("/api/trades")
     def trades(limit: int = 100, days: int = 30):
         """Source of truth = Hyperliquid's user_fills API (not our local fills

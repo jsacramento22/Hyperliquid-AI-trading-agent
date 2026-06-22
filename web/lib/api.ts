@@ -13,6 +13,7 @@ import type {
   Risk,
   RuntimeState,
   TradesResponse,
+  TreeResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -72,6 +73,10 @@ export const api = {
   trades: (limit = 100, days = 365) =>
     get<TradesResponse>(`/api/trades?limit=${limit}&days=${days}`),
   cost: (hours = 24) => get<CostResponse>(`/api/cost?hours=${hours}`),
+  tree: (hours = 168, historyLimit = 30) =>
+    get<TreeResponse>(
+      `/api/tree?hours=${hours}&history_limit=${historyLimit}`,
+    ),
   runtime: () => get<RuntimeState>("/api/runtime"),
   pause: (paused: boolean) =>
     post<{ paused: boolean }>("/api/pause", { paused }),

@@ -266,3 +266,36 @@ export type ClosePositionResponse = {
   cycle_id: string;
   response: unknown;
 };
+
+// One row from the tree_predictions table. Outcome fields (realized_*,
+// correct) are null until backfill scores the prediction after its
+// horizon has elapsed.
+export type TreePredictionRow = {
+  id: number;
+  ts_utc: string;
+  cycle_id: string;
+  asset: string;
+  prob_up: number;
+  predicted_direction: "up" | "down";
+  confidence: "low" | "medium" | "high";
+  model_version: string;
+  horizon_bars: number;
+  mid_price: number;
+  realized_close: number | null;
+  realized_direction: "up" | "down" | null;
+  correct: 0 | 1 | null;
+};
+
+export type TreeAccuracySummary = {
+  scored_count: number;
+  correct_count: number;
+  accuracy: number;
+};
+
+export type TreeResponse = {
+  hours: number;
+  latest: Record<string, TreePredictionRow>;
+  rolling: TreeAccuracySummary;
+  windows: Record<string, TreeAccuracySummary>;
+  history: TreePredictionRow[];
+};

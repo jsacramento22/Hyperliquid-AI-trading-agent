@@ -6,6 +6,7 @@ import sys
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -13,12 +14,14 @@ from . import account as account_mod
 from . import market_data
 from . import monitor
 from . import runtime
+from . import tree_outcomes
 from .agent import run_cycle
 from .executor import Executor
 from .hl_client import build_client, initialize_position_leverage
 from .llm_provider import build_provider
 from .settings import Settings, load_settings
 from .storage import Storage
+from .tree_model import TreePredictor, try_build_predictor
 
 log = logging.getLogger("hl_agent")
 
@@ -31,7 +34,12 @@ def _setup_logging() -> None:
     )
 
 
-def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
+def run_one_cycle(
+    settings: Settings,
+    *,
+    dry_run: bool = False,
+    tree_predictor: TreePredictor | None = None,
+) -> None:
     cycle_id = f"{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     storage = Storage(settings.storage_path)
 
@@ -52,6 +60,15 @@ def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
     )
     account = account_mod.get_state(client)
     storage.log_equity(cycle_id=cycle_id, account=account)
+
+    # Score any tree predictions whose horizon has elapsed. Best-effort —
+    # the snapshot's candles_15m carries enough history to catch anything
+    # made in the last few cycles. Failures here are non-fatal.
+    if tree_predictor is not None:
+        try:
+            tree_outcomes.backfill_from_snapshot(storage, snapshot)
+        except Exception:
+            log.exception("tree_outcomes.backfill_from_snapshot failed — continuing")
 
     starting_equity = storage.starting_equity_today() or account.equity_usd
     risk_config = runtime.effective_risk(settings, storage)
@@ -81,6 +98,9 @@ def run_one_cycle(settings: Settings, *, dry_run: bool = False) -> None:
         account=account,
         starting_equity_usd=starting_equity,
         executor=executor,
+        tree_predictor=tree_predictor,
+        storage=storage,
+        cycle_id=cycle_id,
     )
 
     executed = [asdict(a) for a in result.actions if a.accepted]
@@ -176,6 +196,11 @@ def main() -> None:
     settings = load_settings()
     _initialize_exchange(settings)
 
+    # Built once at startup so the in-memory rolling state (funding history,
+    # OI history) survives across cycles. Returns None when the model
+    # files aren't on disk → bot runs in pre-Phase-2 LLM-only mode.
+    tree_predictor = try_build_predictor(model_dir=Path("data/models"))
+
     next_run = compute_next_run_time(settings)
     delay = (next_run - datetime.now(tz=timezone.utc)).total_seconds()
     if delay > 1:
@@ -186,7 +211,7 @@ def main() -> None:
         )
     sched = BlockingScheduler(timezone="UTC")
     sched.add_job(
-        lambda: _safe_cycle(settings),
+        lambda: _safe_cycle(settings, tree_predictor=tree_predictor),
         "interval",
         minutes=settings.config.cadence_minutes,
         next_run_time=next_run,
@@ -247,9 +272,13 @@ def main() -> None:
     sched.start()
 
 
-def _safe_cycle(settings: Settings) -> None:
+def _safe_cycle(
+    settings: Settings,
+    *,
+    tree_predictor: TreePredictor | None = None,
+) -> None:
     try:
-        run_one_cycle(settings)
+        run_one_cycle(settings, tree_predictor=tree_predictor)
     except Exception as e:
         log.exception("cycle raised — continuing scheduler")
         # Persist the failure so the dashboard can surface it.

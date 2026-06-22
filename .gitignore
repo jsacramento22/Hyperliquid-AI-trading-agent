@@ -24,8 +24,22 @@ web/.env.*.local
 *.sqlite
 *.sqlite3
 *.db.bak
-data/
 logs/
+
+# data/ is selectively excluded, NOT wildcard-excluded — `data/` alone
+# would block `!data/models/` re-include (gitignore can't re-include
+# from an ignored parent). So only the subpaths we never want in git
+# are listed:
+#   data/historical/  large Binance parquet pulls (regenerable)
+#   data/*.db etc.    SQLite trading state, never share
+# data/models/ (trained tree pickle + meta) IS committed — runtime
+# artifact the droplet needs.
+data/historical/
+data/logs/
+data/*.db
+data/*.db.bak
+data/*.sqlite
+data/*.sqlite3
 
 # === Node / Next.js ===
 node_modules/
