@@ -51,11 +51,16 @@ codebase still supports testnet — flip one line in `config.yaml`.
    │  agent cycle (every 15 min):                       │
    │    1. fetch market snapshot (mids + 1h/4h candles  │
    │       + funding) and account state                 │
-   │    2. render compact text context                  │
-   │    3. call Claude with system + tools (cached)     │
-   │    4. tool-use loop — each tool call goes through  │
+   │    2. backfill tree outcomes (Phase 3 — scores     │
+   │       predictions whose 45-min horizon elapsed)    │
+   │    3. tree advisor predict (Phase 2, Mode A) →     │
+   │       log to tree_predictions table                │
+   │    4. render compact text context (incl. tree      │
+   │       signal block — informational only)           │
+   │    5. call LLM with system + tools (cached)        │
+   │    6. tool-use loop — each tool call goes through  │
    │       risk gate → exchange.market_open/.order/...  │
-   │    5. persist tokens, decisions, fills, equity     │
+   │    7. persist tokens, decisions, fills, equity     │
    │                                                    │
    │  auto-TP/SL monitor (every 60s):                   │
    │    1. fetch account state                          │
@@ -99,10 +104,14 @@ hyperliquid/
 │   ├── executor.py     Tool calls → risk gate → Exchange, with rounding
 │   ├── monitor.py      Auto TP/SL monitor (60s ticks, no LLM)
 │   ├── trades.py       Round-trip trade reconstruction from fills
-│   ├── cost.py         Pricing tables for Sonnet/Haiku/Opus + aggregation
+│   ├── cost.py         Pricing tables for Sonnet/Haiku/Opus/DeepSeek + aggregation
 │   ├── storage.py      SQLite append-only log + runtime state
 │   ├── runtime.py      Pause flag + live risk/leverage overrides
 │   ├── version.py      Build fingerprint (mtime hash) + startup time
+│   ├── llm_provider.py Provider abstraction (Anthropic vs OpenRouter)
+│   ├── features.py     34 pure-function features for the tree advisor
+│   ├── tree_model.py   LightGBM TreePredictor wrapper (Mode A signal)
+│   ├── tree_outcomes.py Scores predictions vs realised 15m close at horizon
 │   ├── main.py         APScheduler BlockingScheduler entrypoint (headless)
 │   └── server.py       FastAPI + AsyncIOScheduler (web mode)
 ├── scripts/
@@ -111,8 +120,17 @@ hyperliquid/
 │   ├── dump_payload.py        Print the exact payload Claude would receive
 │   │                          (no API call), with --system / --user / --json
 │   ├── check_prompt_size.py   Quick SYSTEM_PROMPT size report
+│   ├── pull_binance_candles.py  2yr Binance Spot OHLCV → parquet (training data)
+│   ├── train_tree.py            Walk-forward LightGBM training (17 folds)
+│   ├── tune_hyperparams.py      Grid search over LightGBM params
+│   ├── inspect_feature_importance.py  Print gain-based importances
+│   ├── drift_check.py           Live accuracy vs backtest baseline; OK/WARN/ALERT
+│   ├── retrain_tree.py          One-shot: archive → re-pull → train → diff
 │   └── deploy.sh              Rsync to droplet + restart systemd
-├── tests/                     71 unit tests, no network
+├── data/
+│   ├── historical/      Binance parquet pulls (gitignored — regenerable)
+│   └── models/          Trained LightGBM pickle + meta.json (committed)
+├── tests/                     220+ unit tests, no network
 ├── web/                       Next.js 16 frontend (TypeScript + Tailwind v4)
 │   ├── app/                   Routes: / (dashboard + trades), /settings
 │   ├── components/            Panels: Account header, Equity chart,
@@ -363,6 +381,11 @@ NEXT_PUBLIC_API_PASS=<your-htpasswd-password>
 - **Cost panel:** last 24h LLM cost breakdown (input, cache-read,
   cache-write 5m/1h, output) + projected daily, with a 1h/6h/24h/7d
   time-window selector
+- **Tree model panel (Mode A):** latest per-asset LightGBM prediction
+  (UP/DOWN, prob, confidence bucket), 24h / 7d rolling accuracy, and a
+  history table where each row shows mid-at-predict, realised close at
+  horizon, and a ✓/✗/pending verdict. Marked "informational only" — see
+  [Tree advisor (Mode A)](#tree-advisor-mode-a) for the full story
 - **Positions table:** all open positions with side, size, entry, notional,
   uPnL, leverage, liquidation price + any open limit orders. Each row has
   a red **Close** button that opens a confirm modal then sends a
@@ -423,6 +446,10 @@ The server logs to stdout. Useful lines:
 | `auto-tp pending on BTC: ... streak 1/2` | Above threshold but waiting for confirmation |
 | `cycle skipped — agent is paused` | Pause toggle is on |
 | `cycle raised — continuing scheduler` | An exception was caught + logged to `cycle_errors` |
+| `TreePredictor loaded: BTC (model_version=...)` | Tree advisor loaded at startup |
+| `tree predictions: BTC=0.532(medium)` | One predict per cycle, per supported asset |
+| `tree_outcomes: scored N prediction(s)` | Backfill scored at least one elapsed-horizon prediction |
+| `tree model not found at ...` | Predictor fell back to LLM-only (graceful) |
 
 For production (droplet):
 ```bash
@@ -458,6 +485,27 @@ code on disk, so you know whether your edits have taken effect.
 `/api/health` also returns the most recent cycle failure within the last
 hour. The dashboard renders this as a red banner across the top of every
 page until it's dismissed or rolls off the window.
+
+### Tree advisor maintenance
+
+```bash
+# Check live accuracy vs backtest (after ≥100 scored predictions)
+python scripts/drift_check.py
+
+# Inspect what features drive the model (sanity check after a retrain)
+python scripts/inspect_feature_importance.py
+
+# Full retrain pipeline (data refresh + train + diff)
+python scripts/retrain_tree.py --refresh-data --years 2
+
+# Hyperparameter search if the simple retrain didn't help
+python scripts/tune_hyperparams.py
+```
+
+The current shipped model details live in `data/models/btc_tree.meta.json`
+(walk-forward stats, feature list, LightGBM params, training date).
+See [Tree advisor (Mode A)](#tree-advisor-mode-a) for the full design
++ retraining decision criteria.
 
 ### Prompt edits
 
@@ -508,6 +556,155 @@ every order (LLM-originated or auto-monitor):
 - Implied leverage cap (total notional / equity)
 - Daily drawdown kill switch — blocks new opens; only `close_position`
   allowed until UTC midnight rolls the start-of-day equity
+
+---
+
+## Tree advisor (Mode A)
+
+A LightGBM classifier trained on 2 years of Binance Spot BTC data
+(~70,000 15m bars, 34 engineered features) emits a directional
+probability each cycle: "will BTC close up or down in 45 minutes from
+now?" The signal is rendered into the LLM context as one informational
+block — the LLM still owns every trade decision and goes through the
+same risk gate.
+
+### Why hybrid (LLM + tree)?
+
+The LLM brings causal reasoning about funding regimes, candle structure,
+and account-state-conditional rules. The tree brings calibrated
+statistical pattern-matching on numeric features that an LLM doesn't
+reliably extract from a markdown candle table. Backtest accuracy is
+modest (~52.2% on walk-forward, vs 50% random) — useful as a weak
+Bayesian prior, not as an oracle. The hybrid value comes from the LLM
+incorporating that prior alongside everything else it sees.
+
+### What the LLM receives each cycle
+
+Appended to the user message after the candle tables:
+
+```markdown
+## Tree Model Signal (informational — not authoritative)
+Calibration: ~52% directional accuracy on backtest. Use as a weak
+Bayesian prior, not a decision. The system rules above (entry quality,
+rejection signal, invalidation thresholds) own the trade decision.
+- BTC: prob_up=0.532 (+3.2pp from 50/50) → UP over next 45min ·
+  confidence: medium (model: btc_tree_iter80_2026-06-22)
+```
+
+`confidence` is `low` / `medium` / `high` keyed off `|p - 0.5|` —
+< 0.02 / < 0.05 / ≥ 0.05 respectively. The framing is deliberate: the
+backtest accuracy is named in-prompt so the LLM can calibrate.
+
+### What it does NOT do
+
+By design, the tree NEVER:
+- Places orders
+- Picks position size
+- Bypasses the risk gate
+- Overrides take-profit / stop-loss monitors
+- Closes positions
+
+This separation is "Mode A — informational only." An optional Mode B
+(sizing modifier) was scoped but not built; it would be gated on
+collecting ≥1 month of live Mode A outcome data first.
+
+### Lifecycle of one prediction
+
+```
+t = 0min   cycle fires → fetch snapshot → TreePredictor.predict(snap)
+           → log row to tree_predictions with mid_price
+           → render block into LLM context
+
+t = +45min next backfill (driven by the cycle right after the horizon
+           elapses) → look up the 15m candle whose close ≈ predict_ts
+           + 45min from the live snapshot's candles_15m → compare to
+           mid_price → realized_direction + correct (0/1)
+
+t = +60min dashboard's TreePanel refresh shows ✓ or ✗ on the row
+```
+
+The model's rolling per-asset state (24h funding history, OI history)
+lives in process memory and survives across cycles. On process restart
+those buffers reset; two features (`funding_z_24h`, `oi_change_24h_pct`)
+return NaN for ~24h until they refill. LightGBM handles NaN natively, so
+this only mildly degrades predictions during the warmup window.
+
+### Outputs persisted (`tree_predictions` table)
+
+| Column | When written | Used for |
+|---|---|---|
+| `prob_up`, `predicted_direction`, `confidence` | Predict time | Dashboard + LLM context |
+| `mid_price`, `horizon_bars`, `model_version` | Predict time | Outcome scoring + version attribution |
+| `realized_close`, `realized_direction`, `correct` | 45 min later | Accuracy stats + drift detection |
+
+### Retraining
+
+The model is static — `data/models/btc_tree.pkl` only changes when you
+explicitly retrain. **You retrain in two scenarios:**
+
+1. **Reactive** — `drift_check.py` reports WARN/ALERT for several runs in
+   a row, meaning live accuracy has fallen below backtest tolerance
+2. **Proactive** — monthly cadence to incorporate fresh market data,
+   even when no drift was detected
+
+End-to-end retrain (~10 min wallclock, all local):
+
+```bash
+# One-shot — archives current model to data/models/archive/, re-pulls
+# 2 years of Binance candles, walk-forward trains, prints before/after
+python scripts/retrain_tree.py --refresh-data --years 2
+
+# Then commit + deploy (the model pickle lives in git per the gitignore
+# carve-out, so the next deploy.sh ships it to the droplet)
+git add data/models/btc_tree.pkl data/models/btc_tree.meta.json
+git commit -m "Retrain BTC tree (YYYY-MM-DD)"
+git push
+./scripts/deploy.sh
+```
+
+Rollback if the new model is worse than the old:
+
+```bash
+mv data/models/archive/btc_tree_<old-timestamp>.pkl data/models/btc_tree.pkl
+mv data/models/archive/btc_tree_<old-timestamp>.meta.json data/models/btc_tree.meta.json
+git commit -am "Revert tree to <date>" && ./scripts/deploy.sh
+```
+
+### Drift detection
+
+```bash
+# Human-readable (default)
+python scripts/drift_check.py
+
+# Cron / scripting (JSON output, exit 0/1/2 = OK/WARN/ALERT)
+python scripts/drift_check.py --json
+```
+
+Compares rolling live accuracy (default 30-day window) against the
+backtest baseline stored in `meta.json` using a combined standard
+error (backtest std + binomial std on the live N). Verdicts:
+
+| Verdict | Trigger | Exit | Action |
+|---|---|---|---|
+| `OK` | Within 1.5σ of backtest | 0 | Nothing |
+| `INSUFFICIENT` | < 100 scored predictions | 0 | Wait, accumulate more data |
+| `WARN` | 1.5σ–2.5σ below backtest | 1 | Investigate; maybe pre-empt retrain |
+| `ALERT` | > 2.5σ below backtest | 2 | Retrain recommended |
+
+Suggested cron on the droplet (manual setup):
+
+```cron
+# Daily drift check at 09:00 UTC; non-zero exit gets surfaced to logs
+0 9 * * * cd ~/hyperliquid && .venv/bin/python scripts/drift_check.py --json >> data/logs/drift.log
+```
+
+### Why no auto-retrain?
+
+We deliberately keep retraining a human-in-the-loop step. Each retrain
+shifts the `model_version` recorded against future predictions; if
+drift_check then fires again soon after retrain, that's a signal the
+feature set or architecture itself needs revisiting — auto-retrain
+would mask that by silently rebaselining.
 
 ---
 
