@@ -12,12 +12,12 @@ export default function DashboardPage() {
       <AccountHeader />
       <EquityChart hours={24} />
       <CostPanel />
-      <TreePanel />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <PositionsTable />
         <DecisionsTable limit={50} />
       </div>
       <TradesTable limit={100} />
+      <TreePanel />
     </div>
   );
 }

@@ -219,9 +219,9 @@ export function TradesTable({ limit = 100 }: { limit?: number }) {
               : "No trades match the current filter."}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto overflow-y-auto max-h-[28rem]">
             <table className="w-full text-sm">
-              <thead>
+              <thead className="sticky top-0 bg-[var(--panel)] z-10">
                 <tr className="text-[var(--muted)] text-xs uppercase tracking-wide">
                   <th className="py-1 pr-3 text-left">Closed</th>
                   <th className="py-1 pr-3 text-left">Asset</th>
